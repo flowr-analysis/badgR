@@ -1,0 +1,130 @@
+# badgR policy: the tiers of "A Threat Model for R / Shiny Applications".
+# A finding is a call that reaches a capability: its class, `via` (direct | package), and the origins of its values.
+# A tier is assigned when none of its `forbid` rules matches a finding and its `lint` rules report nothing.
+# In a forbid rule, the origin `none` matches findings flowR traced no value for.
+name: threat-model-tiers
+version: 1
+description: Gold, silver, and bronze as defined in the threat model (section Policy Tiers).
+
+# who controls a value: origin classes of flowR input types
+origins:
+  # constants, defaults, temp files, random numbers, code
+  author: [const, dconst, tempfile, rand, lang]
+  # deployment, request, native code: silver trusts it, gold does not
+  system: [system, ffi, options, scope]
+  # parameters of the app's own functions
+  parameter: [param]
+  unknown: [unknown]
+  # the user, files, the network
+  outside: [user, file, net, glob, cmdline]
+# unlisted input types (sound: least trusted inside the app)
+fallbackOrigin: unknown
+
+# what a call can do; first match wins, most severe first.
+# tags / callProps: flowR SemanticCallTag / CallProp; functions: regexes, with `::` matched against pkg::fn
+capabilities:
+  code-execution:
+    class: severe
+    description: evaluates R code
+    functions: ['^(eval|evalq|parse|unserialize)$']
+    tags: [eval]
+    unlessCallProps: [pure]
+    unlessArgProps: [callee]
+  code-download:
+    class: severe
+    description: loads and runs code or data from a path or URL, or installs packages
+    functions:
+      - '^(source|sys\.source|download\.file)$'
+      # installing a package runs its code
+      - '^(install\.packages|install_(github|gitlab|bitbucket|url|git|svn|version|bioc|cran|dev|local)|pkg_install|source_url|source_gist)$'
+  native:
+    class: severe
+    description: calls native code
+    functions: ['^(\.C|\.External|\.Fortran|\.Call|dyn\.load)$']
+    callProps: [ffi]
+  shell:
+    class: severe
+    description: runs a command of the operating system
+    functions: ['^(system|system2|shell|shell\.exec|pipe)$']
+    tags: [process]
+  serialization:
+    class: severe
+    description: reads or writes serialized R objects
+    functions: ['^(saveRDS|load|save|serialize|dump|readRDS|read\.rds)$']
+  destructive:
+    class: outward
+    description: removes, renames, or overwrites files
+    functions: ['^(file\.remove|file\.rename|file\.copy|file\.create|file\.append|unlink)$']
+  network-file:
+    class: outward
+    description: opens a network or file connection, or reads or writes a file
+    functions: ['^(url|socketConnection|gzfile|bzfile|xzfile|fifo|read\.table|read\.csv2?|read\.delim2?|write\.csv2?|write\.table)$']
+    # not `writes`: flowR states it for cat() and graphics devices too
+    tags: [network]
+  output:
+    class: other
+    description: emits HTML or JavaScript, or queries a database
+    tags: [html, javascript, database]
+
+# package functions whose internal sinks do not count (Shiny evaluates the author's code)
+trusted:
+  - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule)$'
+
+# extra flowR linting rules, reported only
+report:
+  - call-contracts
+  - unescaped-arguments
+  - network-functions
+
+# strictest first
+tiers:
+  - name: gold
+    summary: Nothing leaves the app, and every other risky call uses only values written in the code.
+    color: '#d4aa32'
+    review: deployment and access control only
+    description: >-
+      No dangerous call and no call that reaches files or the network, not even with fixed values.
+      Every other risky call uses only values written in the code. No hardcoded or leaked secret, and
+      no state that one user's session leaves for the next.
+    forbid:
+      - classes: [severe, outward]
+        reason: a dangerous call or a call that reaches files or the network, whatever its values
+      - classes: [other]
+        origins: [system, parameter, unknown, outside]
+        reason: a risky call with a value that is not written in the code
+    lint:
+      - secret-exfiltration
+      - process-state-in-session
+      - no-leaked-credentials
+  - name: silver
+    summary: No value from users, files, or the network reaches a dangerous call.
+    color: '#aaacb2'
+    review: the remaining findings, which are user values in other risky calls, and parameters or unknown values inside packages
+    description: >-
+      No value from users, files, or the network reaches a dangerous call, and the app's own
+      dangerous calls get no function parameter or value of unknown source either.
+    forbid:
+      - classes: [severe]
+        origins: [outside]
+        reason: a value from users, files, or the network in a dangerous call
+      - classes: [severe]
+        origins: [parameter, unknown]
+        via: direct
+        reason: a function parameter or a value of unknown source in a dangerous call of the app itself
+  - name: bronze
+    summary: Values from users, files, or the network reach dangerous calls only inside packages.
+    color: '#b06e3c'
+    review: the remaining findings and the package calls that hand user values on to dangerous calls
+    description: >-
+      Values from users, files, or the network reach dangerous calls only inside package functions,
+      never in a dangerous call of the app itself.
+    forbid:
+      - classes: [severe]
+        origins: [outside]
+        via: direct
+        reason: a value from users, files, or the network in a dangerous call of the app itself
+# no tier met, or not analyzable
+fallbackTier:
+  name: none
+  color: '#6b6b6b'
+  review: full

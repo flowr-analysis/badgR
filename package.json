@@ -1,0 +1,56 @@
+{
+  "name": "badgr",
+  "version": "0.1.0",
+  "description": "Security tiers (gold, silver, bronze) for R scripts, Shiny apps, and projects, using flowR",
+  "repository": "github:flowr-analysis/badgR",
+  "homepage": "https://flowr-analysis.github.io/badgR/",
+  "main": "dist/analyze.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "badgr": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.web.json",
+    "sigdb": "tsx src/cli.ts --sigdb-download",
+    "web:build": "tsx scripts/build-web.ts",
+    "web:data": "tsx scripts/gen-web-data.ts web-dist/pkgs",
+    "web:serve": "tsx scripts/serve-web.ts",
+    "web:dev": "tsx scripts/dev-web.ts"
+  },
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "@eagleoutice/flowr": "2.17.6",
+    "fflate": "^0.8.3",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-yaml": "^6.1.3",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/legacy-modes": "^6.5.5",
+    "@codemirror/lint": "^6.9.8",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@lezer/highlight": "^1.2.5",
+    "@types/node": "^26.6.6",
+    "lz-string": "^1.5.0",
+    "playwright-core": "^1.49.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "allowScripts": {
+    "@davisvaughan/tree-sitter-r@1.3.0": true,
+    "esbuild@0.28.2": true
+  },
+  "bin": {
+    "badgr": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "policies"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

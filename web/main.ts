@@ -1,0 +1,2011 @@
+/** The badgR playground: input on the left, report on the right. Nothing here sends data anywhere. */
+import type { EditorView } from '@codemirror/view';
+import { badgeSvg } from '../src/badge';
+import type { Progress, Report } from '../src/core';
+import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
+import { type Policy, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
+import { markdownReport } from '../src/report';
+import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
+import type { PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
+import { SourceError, describeUrl, fromDrop, fromFiles, fromUrl } from './sources';
+import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
+import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
+import defaultPolicy from '../policies/default.yaml';
+import { Examples } from './examples';
+import { highlightLines } from './highlight';
+import { applicableFixes, applyFixes, unifiedDiff } from './patch';
+import { policyEditor, rEditor, setText } from './editors';
+import { renderVisual } from './policy-visual';
+
+declare const BADGR_VERSION: string;
+declare const FLOWR_VERSION: string;
+declare const BADGR_LIVE: boolean;
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => {
+	const e = document.createElement(tag);
+	if(cls) {
+		e.className = cls;
+	}
+	if(text !== undefined) {
+		e.textContent = text;
+	}
+	return e;
+};
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const link = (href: string, text: string, title?: string) => {
+	const a = el('a', '', text);
+	a.href = href;
+	a.target = '_blank';
+	a.rel = 'noopener noreferrer';
+	if(title) {
+		a.title = title;
+	}
+	return a;
+};
+
+/* ---------------------------------------------------------------- worker, started at once */
+
+const base = new URL('.', location.href).href;
+const worker = new Worker('worker.js');
+let vocabulary: PolicyVocabulary | undefined;
+let sigdbTag: string | undefined;
+let nextId = 0;
+let running: { id: number, resolve: (r: Report) => void, reject: (e: Error) => void, onProgress: (p: Progress) => void } | undefined;
+
+worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
+	const m = ev.data;
+	if(m.type === 'ready') {
+		vocabulary = m.vocabulary;
+		sigdbTag = m.sigdb;
+		showVersions();
+		drawPolicyGrid();
+		return;
+	}
+	if(running === undefined || m.id !== running.id) {
+		return;
+	}
+	if(m.type === 'progress') {
+		running.onProgress(m.progress);
+	} else if(m.type === 'report') {
+		running.resolve(m.report);
+	} else {
+		running.reject(new Error(m.error));
+	}
+};
+worker.postMessage({ type: 'warm', base } satisfies WorkerRequest);
+
+function showVersions(): void {
+	const f = $<HTMLAnchorElement>('v-flowr');
+	f.querySelector('.v')!.textContent = FLOWR_VERSION;
+	f.href = `https://github.com/flowr-analysis/flowr/releases/tag/v${FLOWR_VERSION}`;
+	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
+	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
+	const foot = $('footer');
+	foot.replaceChildren(`badgR ${BADGR_VERSION} · `, link(f.href, `flowR ${FLOWR_VERSION}`),
+		` · signature database ${sigdbTag ?? '?'}, with the latest version of each CRAN package (the command line knows every version) · GPL-3.0`);
+}
+showVersions();
+if(BADGR_LIVE) {
+	/* `npm run web:dev`: reload when a rebuild lands */
+	new EventSource('/__live').onmessage = () => location.reload();
+}
+
+async function sha256(text: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+	return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ---------------------------------------------------------------- light, dark, or as the system */
+
+const Themes = ['auto', 'light', 'dark'] as const;
+type Theme = typeof Themes[number];
+function applyTheme(t: Theme): void {
+	if(t === 'auto') {
+		document.documentElement.removeAttribute('data-theme');
+	} else {
+		document.documentElement.dataset.theme = t;
+	}
+	const b = $('theme');
+	b.textContent = t === 'auto' ? 'auto' : t === 'light' ? '☀ light' : '☾ dark';
+	b.title = `theme: ${t === 'auto' ? 'as the system' : t}. Click to switch.`;
+}
+let theme: Theme = (() => {
+	try {
+		const t = localStorage.getItem('badgr.theme');
+		return Themes.includes(t as Theme) ? t as Theme : 'auto';
+	} catch{
+		return 'auto';
+	}
+})();
+applyTheme(theme);
+$('theme').addEventListener('click', () => {
+	theme = Themes[(Themes.indexOf(theme) + 1) % Themes.length];
+	applyTheme(theme);
+	try {
+		localStorage.setItem('badgr.theme', theme);
+	} catch{ /* private mode: the theme lasts as long as the page */ }
+});
+
+/* ---------------------------------------------------------------- tooltips in the page's style */
+
+/* every `title` shows in a tooltip of the page instead of the browser's, also on focus for the keyboard */
+const tip = el('div', 'tip');
+tip.setAttribute('role', 'tooltip');
+tip.hidden = true;
+document.body.append(tip);
+let tipFor: HTMLElement | undefined;
+function showTip(target: HTMLElement): void {
+	const text = target.dataset.tip ?? target.title;
+	if(!text) {
+		return;
+	}
+	if(target.title) {
+		target.dataset.tip = target.title;
+		target.removeAttribute('title');
+	}
+	tipFor = target;
+	tip.textContent = text;
+	tip.hidden = false;
+	const r = target.getBoundingClientRect();
+	const w = tip.offsetWidth;
+	const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8));
+	const below = r.bottom + 8 + tip.offsetHeight < innerHeight;
+	tip.style.left = `${left + scrollX}px`;
+	tip.style.top = `${(below ? r.bottom + 6 : r.top - tip.offsetHeight - 6) + scrollY}px`;
+}
+function hideTip(): void {
+	tip.hidden = true;
+	tipFor = undefined;
+}
+const tipTarget = (e: Event) => (e.target as Element | null)?.closest?.<HTMLElement>('[title], [data-tip]') ?? undefined;
+document.addEventListener('mouseover', e => {
+	const t = tipTarget(e);
+	if(t && t !== tipFor && !t.closest('.cm-editor')) {
+		showTip(t);
+	} else if(!t) {
+		hideTip();
+	}
+});
+document.addEventListener('focusin', e => {
+	const t = tipTarget(e);
+	if(t && !t.closest('.cm-editor')) {
+		showTip(t);
+	}
+});
+document.addEventListener('focusout', hideTip);
+document.addEventListener('scroll', hideTip, true);
+
+/* the popover of the code closes on Escape and on a click elsewhere */
+document.addEventListener('keydown', e => {
+	if(e.key === 'Escape') {
+		$('popover').hidden = true;
+	}
+});
+document.addEventListener('click', e => {
+	const t = e.target as Element;
+	/* an open menu closes on a click elsewhere */
+	document.querySelectorAll<HTMLDetailsElement>('details.menu[open]').forEach(m => {
+		if(!m.contains(t)) {
+			m.open = false;
+		}
+	});
+	if(!t.closest('#popover, .code [class^="m-"], .code [class*=" m-"], .fn-link, #findings tr, .jump, .matrix span')) {
+		$('popover').hidden = true;
+	}
+});
+
+/* ---------------------------------------------------------------- tabs */
+
+for(const tab of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
+	tab.addEventListener('click', () => {
+		for(const t of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
+			t.setAttribute('aria-selected', String(t === tab));
+		}
+		for(const p of document.querySelectorAll<HTMLElement>('[data-panel]')) {
+			p.hidden = p.dataset.panel !== tab.dataset.tab;
+		}
+	});
+}
+
+/* ---------------------------------------------------------------- policy */
+
+const PolicyKey = 'badgr.policy';
+const stored = (() => {
+	try {
+		return localStorage.getItem(PolicyKey) ?? undefined;
+	} catch{
+		return undefined;
+	}
+})();
+let policyText = stored ?? defaultPolicy;
+let policy: Policy | undefined;
+
+function readPolicy(): boolean {
+	try {
+		policy = parsePolicy(policyText, 'policy', '');
+		$('policy-status').textContent = policyText === defaultPolicy ? 'default policy' : 'custom policy';
+		$('policy-status').classList.remove('bad');
+		return true;
+	} catch(e) {
+		$('policy-status').textContent = e instanceof PolicyError || e instanceof Error ? e.message.replace(/^policy: /, '') : String(e);
+		$('policy-status').classList.add('bad');
+		return false;
+	}
+}
+
+let gridTimer: number | undefined;
+function drawPolicyGrid(): void {
+	clearTimeout(gridTimer);
+	gridTimer = window.setTimeout(() => renderVisual($('policy-visual'), policyText, vocabulary, text => {
+		setText(yamlView, text);
+	}), 30);
+}
+
+function policyChanged(text: string): void {
+	policyText = text;
+	if(!readPolicy()) {
+		return;
+	}
+	try {
+		if(text === defaultPolicy) {
+			localStorage.removeItem(PolicyKey);
+		} else {
+			localStorage.setItem(PolicyKey, text);
+		}
+	} catch{ /* private mode: the policy lasts as long as the page */ }
+	drawPolicyGrid();
+	drawTierTable();
+
+/* the start: the four example tiers, one click each */
+for(const ex of Examples.slice(0, 4)) {
+	const b = el('button', 'start-card');
+	b.type = 'button';
+	const img = el('img');
+	img.alt = '';
+	const tier = policy?.tiers.find(t => t.name === ex.label) ?? (ex.label === policy?.fallbackTier.name ? policy.fallbackTier : undefined);
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(ex.label, tier?.color ?? '#6b6b6b'))}`;
+	const holder = el('span', 'start-badge');
+	holder.append(img);
+	b.append(holder, el('span', '', sentence(ex.title) + '.'));
+	b.addEventListener('click', () => {
+		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
+		setText(codeView, ex.files.map(f => f.content).join('\n'));
+		runEditor();
+	});
+	$('start').append(b);
+}
+	retier();
+}
+
+const yamlView: EditorView = policyEditor($('policy'), policyText, policyChanged, () => vocabulary);
+for(const b of document.querySelectorAll<HTMLButtonElement>('[data-view]')) {
+	b.addEventListener('click', () => {
+		for(const o of document.querySelectorAll<HTMLButtonElement>('[data-view]')) {
+			o.setAttribute('aria-pressed', String(o === b));
+		}
+		$('policy-visual').hidden = b.dataset.view !== 'grid';
+		$('policy').hidden = b.dataset.view !== 'yaml';
+	});
+}
+$('policy-reset').addEventListener('click', () => setText(yamlView, defaultPolicy));
+readPolicy();
+drawPolicyGrid();
+
+/* ---------------------------------------------------------------- progress */
+
+const StepNames: [Progress['phase'], string][] = [['files', 'files'], ['dataflow', 'reading the code'], ['sinks', 'risky calls'], ['origins', 'where values come from'], ['lint', 'more checks']];
+
+function showProgress(label: string): ((p: Progress | string) => void) & { stop: () => void } {
+	$('progress').hidden = false;
+	$('error').hidden = true;
+	$('empty').hidden = true;
+	const steps = $('steps');
+	steps.replaceChildren(el('span', 'step active', 'fetch'), ...StepNames.map(([, name]) => el('span', 'step', name)));
+	const fill = $('bar-fill');
+	const text = $('progress-text');
+	const started = performance.now();
+	let lastPhase = -1;
+	let message = label;
+	const tick = setInterval(() => {
+		text.textContent = `${message} · ${((performance.now() - started) / 1000).toFixed(1)} s`;
+	}, 100);
+	const update = (p: Progress | string) => {
+		if(typeof p === 'string') {
+			message = p;
+			fill.className = 'indeterminate';
+			return;
+		}
+		if(p.phase === 'done') {
+			return;
+		}
+		const at = StepNames.findIndex(([phase]) => phase === p.phase);
+		if(at !== lastPhase) {
+			lastPhase = at;
+			[...steps.children].forEach((s, i) => s.className = 'step' + (i - 1 < at ? ' done' : i - 1 === at ? ' active' : ''));
+		}
+		message = p.message;
+		if(p.total) {
+			fill.className = '';
+			fill.style.width = `${Math.round(100 * (at + (p.done ?? 0) / p.total) / StepNames.length)}%`;
+		} else {
+			fill.className = 'indeterminate';
+			fill.style.width = '';
+		}
+	};
+	return Object.assign(update, { stop: () => clearInterval(tick) });
+}
+
+function showError(msg: string): void {
+	$('progress').hidden = true;
+	const e = $('error');
+	e.hidden = false;
+	e.textContent = msg;
+}
+
+/* ---------------------------------------------------------------- analysis, with a cache per code and policy */
+
+/** where the analyzed code came from, which decides whether a link can bring it back */
+type Source = { kind: 'code' } | { kind: 'url', url: string } | { kind: 'files' };
+interface Run { report: Report, files: readonly SourceFile[], policyText: string, fromEditor: boolean, source: Source }
+const cache = new Map<string, Run>();
+let last: Run | undefined;
+let busy = false;
+let queued: (() => void) | undefined;
+
+const keyOf = (files: readonly SourceFile[], text: string) => sha256(`${text}\u0000${JSON.stringify(files)}`);
+
+async function analyze(target: string, load: (progress: (msg: string) => void) => Promise<SourceFile[]>, source: Source = { kind: 'files' }, then?: () => void): Promise<void> {
+	const fromEditor = source.kind === 'code';
+	if(busy) {
+		queued = () => void analyze(target, load, source, then);
+		return;
+	}
+	if(!readPolicy()) {
+		showError(`The policy is not valid: ${$('policy-status').textContent}`);
+		return;
+	}
+	busy = true;
+	selected = undefined;
+	document.body.classList.add('busy');
+	const update = showProgress(`reading ${target}`);
+	try {
+		const files = await load(m => update(m));
+		const text = policyText;
+		const key = await keyOf(files, text);
+		let run = cache.get(key);
+		if(run === undefined) {
+			const id = ++nextId;
+			const report = await new Promise<Report>((resolve, reject) => {
+				running = { id, resolve, reject, onProgress: update };
+				void sha256(text).then(policyHash => worker.postMessage({
+					type: 'analyze', id, base, target, files, policyText: text,
+					policyName: text === defaultPolicy ? 'default.yaml' : 'custom policy', policyHash
+				} satisfies WorkerRequest));
+			});
+			run = { report, files, policyText: text, fromEditor, source };
+			cache.set(key, run);
+		}
+		update.stop();
+		$('progress').hidden = true;
+		show({ ...run, report: { ...run.report, target }, fromEditor, source });
+		then?.();
+	} catch(e) {
+		update.stop();
+		showError(e instanceof SourceError || e instanceof Error ? e.message : String(e));
+	} finally {
+		busy = false;
+		running = undefined;
+		document.body.classList.remove('busy');
+		const next = queued;
+		queued = undefined;
+		next?.();
+	}
+}
+
+function show(run: Run): void {
+	last = run;
+	$('empty').hidden = true;
+	$('shared').hidden = true;
+	render(run.report, run.files);
+	markStale();
+	writeLink();
+}
+
+/* ---------------------------------------------------------------- links that bring the result back */
+
+/**
+ * The page's address names the analyzed code (inline, compressed, for code from the editor; the URL for a
+ * fetched repository or file), the tier and the number of findings it got, and the selected result. Opening
+ * the link shows this at once and analyzes the code again. The hash never reaches a server.
+ */
+let selected: string | undefined;
+
+function b64url(bytes: Uint8Array): string {
+	let bin = '';
+	for(const b of bytes) {
+		bin += String.fromCharCode(b);
+	}
+	return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64url(text: string): Uint8Array {
+	const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+	return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+
+function linkParams(): URLSearchParams | undefined {
+	if(last === undefined || last.source.kind === 'files') {
+		return undefined;
+	}
+	const q = new URLSearchParams();
+	if(last.source.kind === 'url') {
+		q.set('url', last.source.url);
+	} else {
+		q.set('z', b64url(deflateSync(strToU8(codeView.state.doc.toString()), { level: 9 })));
+	}
+	const decided = last.report.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined);
+	if(decided.length > 0) {
+		q.set('rv', b64url(deflateSync(strToU8(JSON.stringify(decided)), { level: 9 })));
+	}
+	q.set('tier', last.report.tier.tier);
+	q.set('n', String(last.report.findings.length));
+	if(selected !== undefined) {
+		q.set('at', selected);
+	}
+	return q;
+}
+
+function writeLink(): void {
+	const q = linkParams();
+	history.replaceState(null, '', q ? `#${q.toString()}` : location.pathname);
+}
+
+/** the same code in flowR's playground, with the lines of the findings marked */
+function playgroundLink(r: Report, files: readonly SourceFile[]): HTMLElement {
+	const rFiles = files.filter(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path));
+	const main = rFiles.find(f => r.findings.some(x => x.file === f.path)) ?? rFiles[0];
+	const marks = r.findings.filter(f => (f.file ?? main?.path) === main?.path && f.loc).map(f => `${f.loc?.[0]}` as `${number}`);
+	const url = main === undefined ? undefined : Playground.link({
+		code: main.content, name: main.path, files: rFiles.filter(f => f !== main).map(f => ({ name: f.path, code: f.content })), marks
+	});
+	if(url === undefined || url.length > 4000) {
+		const b = el('button', 'button secondary small', 'flowR playground');
+		b.type = 'button';
+		b.disabled = true;
+		b.title = 'the code is too long for a link to the flowR playground';
+		return b;
+	}
+	const a = link(url, 'flowR playground', 'open this code in flowR\'s playground, with the lines of the findings marked: dataflow, slices, and linting results');
+	a.className = 'button secondary small';
+	return a;
+}
+
+function shareButton(): HTMLButtonElement {
+	const shareable = last !== undefined && last.source.kind !== 'files';
+	const b = copyButton('copy link', () => location.href, shareable
+		? 'a link that opens this result here; the code travels inside the link, never to a server'
+		: 'uploaded files are not part of a link; share report.md instead');
+	b.disabled = !shareable;
+	return b;
+}
+
+/** a policy change that keeps the findings (only tiers changed) is re-tiered here, without flowR */
+function retier(): void {
+	if(last === undefined || policy === undefined) {
+		return;
+	}
+	let old: Policy;
+	try {
+		old = parsePolicy(last.policyText, 'policy', '');
+	} catch{
+		return;
+	}
+	const core = (p: Policy) => JSON.stringify([p.origins, p.fallbackOrigin, p.capabilities, p.trusted]);
+	const ran = new Set(last.report.lint.map(l => l.rule));
+	if(core(old) !== core(policy) || !lintRulesOf(policy).every(r => ran.has(r))) {
+		$('result').classList.add('stale');
+		$('code-status').textContent = 'the policy changed what is analyzed: analyze again';
+		return;
+	}
+	const report: Report = {
+		...last.report,
+		tier:   assignTier(policy, last.report.findings, last.report.lint, last.report.analyzed),
+		policy: { ...last.report.policy, name: policyText === defaultPolicy ? 'default.yaml' : 'custom policy' }
+	};
+	last = { ...last, report, policyText };
+	render(report, last.files);
+	markStale();
+}
+
+/* ---------------------------------------------------------------- inputs */
+
+const drop = $('drop');
+$<HTMLInputElement>('file-input').addEventListener('change', ev => {
+	const input = ev.target as HTMLInputElement;
+	const list = [...input.files ?? []];
+	void analyze(list.length === 1 ? list[0].name : `${list.length} files`, () => fromFiles(list));
+	input.value = '';
+});
+$<HTMLInputElement>('folder-input').addEventListener('change', ev => {
+	const input = ev.target as HTMLInputElement;
+	const list = [...input.files ?? []];
+	void analyze(list[0]?.webkitRelativePath.split('/')[0] ?? 'folder', () => fromFiles(list));
+	input.value = '';
+});
+drop.addEventListener('dragover', ev => {
+	ev.preventDefault();
+	drop.classList.add('over');
+});
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', ev => {
+	ev.preventDefault();
+	drop.classList.remove('over');
+	const items = ev.dataTransfer?.items;
+	if(items) {
+		void analyze(items[0]?.webkitGetAsEntry()?.name ?? 'dropped files', () => fromDrop(items));
+	}
+});
+$<HTMLInputElement>('url-input').addEventListener('input', () => {
+	const d = describeUrl($<HTMLInputElement>('url-input').value);
+	$('url-note').textContent = d ? sentence(d.note) + '.' : '';
+	$('url-note').classList.toggle('bad', d?.kind === 'shiny-deployment');
+});
+$('url-form').addEventListener('submit', ev => {
+	ev.preventDefault();
+	const url = $<HTMLInputElement>('url-input').value.trim();
+	void analyze(url, progress => fromUrl(url, progress), { kind: 'url', url });
+});
+
+/* the editor: an example only loads its code (and its result, if analyzed before); Analyze or live mode runs */
+const liveButton = $<HTMLButtonElement>('live');
+const live = { get checked(): boolean {
+	return liveButton.getAttribute('aria-pressed') === 'true';
+} };
+let liveTimer: number | undefined;
+const editorFiles = (): SourceFile[] => {
+	const text = codeView.state.doc.toString();
+	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
+	return ex ? ex.files : [{ path: 'script.R', content: text }];
+};
+const editorTarget = () => {
+	const text = codeView.state.doc.toString();
+	return `${Examples.find(e => e.files.map(f => f.content).join('\n') === text)?.label.replace(/^/, 'example: ') ?? 'pasted code'}`;
+};
+const runEditor = (then?: () => void) => void analyze(editorTarget(), async() => editorFiles(), { kind: 'code' }, then);
+
+function markStale(): void {
+	const edited = last?.fromEditor === true && JSON.stringify(last.files) !== JSON.stringify(editorFiles());
+	$('result').classList.toggle('stale', edited);
+	$('code-status').textContent = edited ? 'edited since the analysis' : '';
+}
+
+async function showCached(): Promise<void> {
+	const run = cache.get(await keyOf(editorFiles(), policyText));
+	if(run !== undefined) {
+		show({ ...run, report: { ...run.report, target: editorTarget() }, fromEditor: true, source: { kind: 'code' } });
+	}
+}
+
+const codeView: EditorView = rEditor($('code'), Examples[0].files[0].content, () => {
+	markExample();
+	markStale();
+	void showCached();
+	if(live.checked) {
+		clearTimeout(liveTimer);
+		liveTimer = window.setTimeout(runEditor, 600);
+	}
+}, runEditor);
+/* the examples, one per tier, in a menu: the badge it gets and what the code does */
+function markExample(): void {
+	const text = codeView.state.doc.toString();
+	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
+	$('examples-label').textContent = ex ? `Example: ${ex.label}` : 'Load an example';
+	for(const b of $('examples').children) {
+		b.setAttribute('aria-current', String((b as HTMLElement).dataset.label === ex?.label));
+	}
+}
+for(const ex of Examples) {
+	const b = el('button', 'ex');
+	b.type = 'button';
+	b.dataset.label = ex.label;
+	const img = el('img');
+	img.alt = '';
+	const tier = policy?.tiers.find(t => t.name === ex.label);
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(tier ? ex.label : ex.label === 'none' ? 'none' : 'bronze', tier?.color ?? (ex.label === 'none' ? policy?.fallbackTier.color ?? '#6b6b6b' : '#b06e3c')))}`;
+	b.append(img, el('span', '', `${sentence(ex.title)}.`), el('span', 'sr', ex.label));
+	b.addEventListener('click', () => {
+		setText(codeView, ex.files.map(f => f.content).join('\n'));
+		($('examples-menu') as HTMLDetailsElement).open = false;
+		markExample();
+	});
+	$('examples').append(b);
+}
+markExample();
+$('analyze-code').addEventListener('click', () => runEditor());
+liveButton.addEventListener('click', () => {
+	liveButton.setAttribute('aria-pressed', String(!live.checked));
+	if(live.checked) {
+		runEditor();
+	}
+});
+
+/* ---------------------------------------------------------------- report */
+
+const TierColor: Record<string, string> = { gold: 't-gold', silver: 't-silver', bronze: 't-bronze', none: 't-none' };
+
+function download(name: string, type: string, content: string): HTMLAnchorElement {
+	const a = el('a', 'button secondary small', name);
+	a.href = URL.createObjectURL(new Blob([content], { type }));
+	a.download = name;
+	return a;
+}
+
+function importReviewButton(): HTMLElement {
+	const label = el('label', 'button secondary small', 'import review');
+	label.title = 'read a review.json, from this page or written by hand, and add its decisions';
+	const input = el('input');
+	input.type = 'file';
+	input.accept = '.json,application/json';
+	input.hidden = true;
+	input.addEventListener('change', async() => {
+		const file = input.files?.[0];
+		if(file === undefined) {
+			return;
+		}
+		try {
+			for(const e of parseReview(await file.text())) {
+				reviews.set(e.key, e);
+			}
+			saveReviews();
+			if(last) {
+				render(last.report, last.files);
+				writeLink();
+			}
+		} catch(e) {
+			showError(`That is not a review file: ${e instanceof Error ? e.message : String(e)}`);
+		}
+	});
+	label.append(input);
+	return label;
+}
+
+function copyButton(label: string, text: () => string, title: string): HTMLButtonElement {
+	const b = el('button', 'button secondary small', label);
+	b.type = 'button';
+	b.title = title;
+	b.addEventListener('click', () => {
+		void navigator.clipboard.writeText(text()).then(() => {
+			b.textContent = 'copied';
+			setTimeout(() => b.textContent = label, 1200);
+		}, () => {
+			b.textContent = 'copy failed';
+		});
+	});
+	return b;
+}
+
+const where = (f: { file?: string, loc?: readonly number[] }) => `${f.file ?? ''}${f.loc ? `:${f.loc[0]}` : ''}`;
+
+/** flowR's messages mark code with backticks */
+function ticks(text: string): (string | HTMLElement)[] {
+	return text.split(/`([^`]+)`/).map((part, i) => i % 2 === 1 ? el('code', '', part) : part);
+}
+
+/** rdrr.io hosts the help pages of base R and of CRAN */
+function docsOf(call: string): string | undefined {
+	const [pkg, fn] = call.includes('::') ? call.split('::') : [undefined, call];
+	if(pkg === undefined) {
+		return undefined;
+	}
+	const baseR = ['base', 'stats', 'utils', 'methods', 'graphics', 'grDevices', 'datasets', 'tools', 'parallel', 'compiler', 'grid', 'splines', 'stats4', 'tcltk'];
+	return baseR.includes(pkg) ? `https://rdrr.io/r/${pkg}/${fn}.html` : `https://rdrr.io/cran/${pkg}/man/${fn}.html`;
+}
+
+/** the most telling findings first: severe, outside values, the app's own calls */
+function rank(f: Finding): number {
+	return (f.class === 'severe' ? 0 : f.class === 'outward' ? 10 : 20) + (f.origins.includes('outside') ? 0 : 4) + (f.via === 'direct' ? 0 : 1);
+}
+
+/** a phrase as the start of a sentence, without the full stop */
+function sentence(text: string): string {
+	return text.charAt(0).toUpperCase() + text.slice(1).replace(/\.$/, '');
+}
+
+/**
+ * Why a tier fails, in terms of the code: the call that breaks the rule, what it does, and where, then the
+ * rule it breaks. A failed linting rule has no call; it is named instead.
+ */
+function concreteReason(r: Report, v: { reason: string, findings: readonly string[] }, more: number): HTMLElement {
+	const span = el('span');
+	const fs = v.findings.map(id => r.findings.find(f => f.id === id)).filter((f): f is Finding => f !== undefined);
+	const tail = more > 0 ? ` (and ${more} more reason${more > 1 ? 's' : ''})` : '';
+	if(fs.length === 0) {
+		span.append(`${sentence(v.reason)}.${tail}`);
+		return span;
+	}
+	const f = fs[0];
+	const at = el('a', 'jump', where(f));
+	at.href = '#code-view';
+	at.addEventListener('click', ev => {
+		ev.preventDefault();
+		ev.stopPropagation();
+		selectFinding(f);
+	});
+	span.append(el('code', '', f.call), ` ${describe(f)}, at `, at, fs.length > 1 ? ` and ${fs.length - 1} more place${fs.length > 2 ? 's' : ''}` : '', '.',
+		el('span', 'rule-broken', ` The tier forbids ${v.reason}.`), tail);
+	return span;
+}
+
+/** `a, b, and c` */
+function listing(xs: readonly string[]): string {
+	return xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')}, and ${xs.at(-1)}`;
+}
+
+/** what a finding does, as the rest of a sentence that starts with the call */
+/** flowR's input types, in words */
+const TypeWords: Record<string, string> = {
+	user: 'user input', file: 'file contents', net: 'network data', glob: 'a file listing', cmdline: 'command-line arguments',
+	param: 'a function parameter', unknown: 'a value flowR could not trace', system: 'a system setting', ffi: 'a value from native code',
+	options: 'an R option', scope: 'a value of the environment', const: 'a constant', dconst: 'a default value', tempfile: 'a temporary file name',
+	rand: 'a random number', lang: 'code of the script'
+};
+/* the words of the page: no one needs to know about taint analysis to read a report */
+const ClassWords: Record<string, string> = { severe: 'dangerous', outward: 'files or network', other: 'output or database' };
+/* what a class covers, read from the policy rather than written here */
+const ClassLong: Record<string, string> = new Proxy({}, {
+	get: (_, c: string) => `${cw(c)} calls: the capabilities ${listing(Object.entries(policy?.capabilities ?? {}).filter(([, v]) => v.class === c).map(([k]) => k))}`
+});
+const OriginWords: Record<string, string> = { author: 'the code', system: 'the system', parameter: 'parameters', unknown: 'unknown', outside: 'users, files, net', none: 'no value' };
+const OriginLong: Record<string, string> = {
+	author: 'values written in the code itself, such as constants',
+	system: 'values the deployment or the system sets, such as options or environment variables',
+	parameter: 'parameters of the app\'s own functions, which whoever calls them decides',
+	unknown: 'values flowR could not trace back',
+	outside: 'values from users, files, or the network',
+	none: 'calls without any traced value'
+};
+const cw = (c: string) => ClassWords[c] ?? c;
+const ow = (o: string) => OriginWords[o] ?? o;
+
+/**
+ * What a finding does, from what flowR states: the capability the policy matched (its name in the policy),
+ * flowR's semantic tags of the function, and the value sources of the input-sources query. No prose of
+ * badgR's own about what a function does.
+ */
+function describe(f: Finding): string {
+	const tags = f.tags && f.tags.length > 0 ? ` (flowR: ${f.tags.join(', ')})` : '';
+	const words = [...new Set(f.inputTypes.map(t => TypeWords[t] ?? t))];
+	const values = words.length > 0 ? listing(words) : 'no traced value';
+	return f.via === 'package'
+		? `reaches ${f.capability} inside its package, through ${f.through}${tags}, with ${values}`
+		: `has the capability ${f.capability}${tags}, with ${values}`;
+}
+
+/* the flowR documentation of what badgR asks flowR */
+const Wiki = 'https://github.com/flowr-analysis/flowr/wiki/';
+const Docs = {
+	inputSources:  `${Wiki}%5BQuery%5D-Input-Sources`,
+	functionInfo:  `${Wiki}%5BQuery%5D-Function-Info`,
+	sigdb:         `${Wiki}Signature-Database`,
+	linter:        `${Wiki}%5BQuery%5D-Linter`,
+	callContracts: `${Wiki}%5BLinting-Rule%5D-Call-Contracts`
+};
+/** a tag that opens the flowR page behind it */
+function tagLink(cls: string, text: string, href: string, title: string): HTMLAnchorElement {
+	const a = link(href, text, title);
+	a.className = `tag ${cls}`;
+	return a;
+}
+
+/* ---------------------------------------------------------------- the reviewer's hand classification */
+
+/*
+ * A reviewer can mark a finding as tolerated, a false positive, or to fix, with a note. This never changes
+ * the tier. The decisions stay in this browser, travel in shared links, and export as review.json, which
+ * `badgr --review review.json` reads as well.
+ */
+const ReviewKey = 'badgr.review';
+const reviews = new Map<string, ReviewEntry>((() => {
+	try {
+		return parseReview(localStorage.getItem(ReviewKey) ?? '[]').map(e => [e.key, e] as const);
+	} catch{
+		return [];
+	}
+})());
+/* the browser keeps the newest 500 decisions of the last 90 days, so it does not fill up over the years */
+const ReviewKeep = 500;
+const ReviewDays = 90;
+const reviewTimes = new Map<string, number>((() => {
+	try {
+		return Object.entries(JSON.parse(localStorage.getItem(`${ReviewKey}.at`) ?? '{}') as Record<string, number>);
+	} catch{
+		return [];
+	}
+})());
+function saveReviews(touched?: string): void {
+	const now = Date.now();
+	if(touched !== undefined) {
+		reviewTimes.set(touched, now);
+	}
+	for(const k of reviews.keys()) {
+		if(!reviewTimes.has(k)) {
+			reviewTimes.set(k, now);
+		}
+	}
+	const keep = [...reviewTimes].filter(([k, t]) => reviews.has(k) && now - t < ReviewDays * 864e5).sort((a, b) => b[1] - a[1]).slice(0, ReviewKeep);
+	const kept = new Set(keep.map(([k]) => k));
+	for(const k of [...reviews.keys()]) {
+		if(!kept.has(k) && k !== touched) {
+			reviews.delete(k);
+		}
+	}
+	reviewTimes.clear();
+	keep.forEach(([k, t]) => reviewTimes.set(k, t));
+	try {
+		localStorage.setItem(`${ReviewKey}.at`, JSON.stringify(Object.fromEntries(reviewTimes)));
+		localStorage.setItem(ReviewKey, JSON.stringify([...reviews.values()]));
+	} catch{ /* private mode: the decisions last as long as the page */ }
+}
+function keyOfFinding(f: Finding): string {
+	const file = last?.files.find(x => x.path === f.file) ?? last?.files.find(x => /\.(R|r|Rmd|rmd|qmd)$/.test(x.path));
+	const line = f.loc ? file?.content.split('\n')[f.loc[0] - 1] : undefined;
+	return findingKey(f, line);
+}
+function reviewOf(f: Finding): ReviewEntry | undefined {
+	return reviews.get(keyOfFinding(f));
+}
+function setReview(f: Finding, state: ReviewState | undefined, note?: string): void {
+	const key = keyOfFinding(f);
+	if(state === undefined) {
+		reviews.delete(key);
+	} else {
+		reviews.set(key, { key, state, ...(note ? { note } : {}) });
+	}
+	saveReviews(key);
+	if(last) {
+		const keep = scrollY;
+		render(last.report, last.files);
+		writeLink();
+		scrollTo({ top: keep });
+	}
+}
+/** the report with the decisions in it, for the downloads */
+function reviewed(r: Report): Report {
+	return { ...r, findings: r.findings.map(f => {
+		const e = reviewOf(f);
+		return e ? { ...f, review: { state: e.state, ...(e.note ? { note: e.note } : {}) } } : f;
+	}) };
+}
+/** the compact control of a table row: one button per state, the active one pressed */
+function reviewPicker(f: Finding, compact: boolean): HTMLElement {
+	const box = el('span', 'rv');
+	const now = reviewOf(f)?.state;
+	for(const st of ReviewStates) {
+		const b = el('button', `rv-b rv-${st}`, compact ? { 'tolerated': '✓', 'false-positive': 'FP', 'to-fix': 'fix' }[st] : ReviewLabel[st]);
+		b.type = 'button';
+		b.setAttribute('aria-pressed', String(now === st));
+		b.title = now === st ? `${ReviewLabel[st]}: click to undo` : `mark as ${ReviewLabel[st]} (does not change the tier)`;
+		b.addEventListener('click', ev => {
+			ev.stopPropagation();
+			setReview(f, now === st ? undefined : st, reviewOf(f)?.note);
+		});
+		box.append(b);
+	}
+	return box;
+}
+/** the popover's part: the state and a note */
+function reviewBox(f: Finding): HTMLElement {
+	const box = el('div', 'rv-box');
+	box.append(el('span', 'hint', 'Your review: '), reviewPicker(f, false));
+	const note = el('input');
+	note.placeholder = 'a note, e.g. why it is tolerated';
+	note.value = reviewOf(f)?.note ?? '';
+	note.addEventListener('change', () => setReview(f, reviewOf(f)?.state ?? 'tolerated', note.value.trim()));
+	box.append(note);
+	return box;
+}
+/** how the findings table was grouped and unfolded, kept while the same report is redrawn */
+const view: { target?: string, count?: number, groupBy: 'capability' | 'call' | 'file' | 'none', expanded: Set<string>, full: Set<string> } =
+	{ groupBy: 'none', expanded: new Set(), full: new Set() };
+
+let selectFinding: (f: Finding, quiet?: boolean) => void = () => {};
+let revealFinding: (f: Finding) => void = () => {};
+let selectLint: (rule: string, r: LintResult, quiet?: boolean) => void = () => {};
+
+function render(r: Report, files: readonly SourceFile[]): void {
+	$('result').hidden = false;
+	const svg = badgeSvg(r.tier.tier, r.tier.color);
+	const img = el('img');
+	img.alt = `badgR: ${r.tier.tier}`;
+	img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+	$('badge').replaceChildren(img);
+	$('verdict-title').replaceChildren(
+		...(r.tier.tier === 'none' ? [document.createTextNode('No tier '), el('span', 'sr', 'none')] : [el('span', `tier-word ${TierColor[r.tier.tier] ?? ''}`, r.tier.tier), document.createTextNode(' tier')]),
+		el('small', 'target', r.target));
+	/* the one line that says what the assigned tier means */
+	const spec = policy?.tiers.find(t => t.name === r.tier.tier);
+	const req = el('p', `requirement ${TierColor[r.tier.tier] ?? 't-none'}`, spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits: every finding needs a review by hand.' : ''));
+	$('verdict-req').replaceWith(req);
+	req.id = 'verdict-req';
+
+	/* next to the badge: counts at a glance, then labeled rows, then the most telling findings */
+	const summary = $('summary');
+	summary.replaceChildren();
+	const stat = (text: string, cls: string, title: string, go?: () => void) => {
+		const chip = el(go ? 'button' : 'span', `stat ${cls}`, text);
+		chip.title = title;
+		if(go) {
+			(chip as HTMLButtonElement).type = 'button';
+			chip.addEventListener('click', go);
+		}
+		return chip;
+	};
+	const stats = el('div', 'stats');
+	const filterBy = (key: string) => () => {
+		const b = $('filters').querySelector<HTMLButtonElement>(`button[data-key="${key}"]`);
+		b?.click();
+		$('findings').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	};
+	if(!r.analyzed) {
+		stats.append(stat('not analyzed', 'bad', r.error ?? 'flowR could not analyze the code'));
+	} else {
+		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? '' : 'ok', 'calls that can do something the policy watches, such as running commands or reaching the network'));
+		for(const c of [...new Set(r.findings.map(f => f.class))]) {
+			const n = r.findings.filter(f => f.class === c).length;
+			stats.append(stat(`${n} ${cw(c)}`, `c-${c}`, `${sentence(ClassLong[c])}. Click to filter.`, filterBy(`class:${c}`)));
+		}
+		const outside = r.findings.filter(f => f.origins.includes('outside')).length;
+		if(outside > 0) {
+			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'values from users, files, or the network reach these calls. Click to filter.', filterBy('origin:outside')));
+		}
+		const hits = r.lint.filter(l => l.count > 0);
+		const n = hits.reduce((s2, l) => s2 + l.count, 0);
+		const fixes = hits.flatMap(l => l.results).filter(x => x.quickFix).length;
+		if(n > 0) {
+			stats.append(stat(`${plural(n, 'lint result')}${fixes ? `, ${fixes} fixable` : ''}`, 'c-lint', `${listing(hits.map(l => `${l.rule} (${l.count})`))}. Click to see them.`,
+				() => $('lint').scrollIntoView({ block: 'start', behavior: 'smooth' })));
+		}
+	}
+	if(r.findings.length > 0) {
+		const c = reviewCounts(r.findings.map(f => reviewOf(f)?.state));
+		const done = r.findings.length - c.unreviewed;
+		stats.append(stat(done === 0 ? 'none reviewed' : `${done} of ${r.findings.length} reviewed`, c.unreviewed === 0 ? 'ok' : 'c-review',
+			done === 0 ? 'mark findings as tolerated, false positives, or to fix in the table or in a finding\'s details; this does not change the tier'
+				: `${c.tolerated} tolerated, ${c['false-positive']} false positives, ${c['to-fix']} to fix. Click to show the unreviewed ones.`,
+			filterBy('review:unreviewed')));
+	}
+	summary.append(stats);
+
+	const facts = el('dl', 'facts');
+	const fact = (k: string, ...v: (string | Node)[]) => {
+		const dd = el('dd');
+		dd.append(...v);
+		facts.append(el('dt', '', k), dd);
+	};
+	const mine = r.tier.checks.findIndex(c => c.tier === r.tier.tier);
+	const above = r.tier.checks[(mine < 0 ? r.tier.checks.length : mine) - 1];
+	if(above?.violations[0]) {
+		const more = above.violations.length - 1;
+		const why = concreteReason(r, above.violations[0], more);
+		why.title = above.violations.map(v => sentence(v.reason)).join('. ') + '.';
+		fact(`why not ${above.tier}`, why);
+	}
+	fact('check by hand', r.tier.review === 'full' ? 'Everything, by hand.' : sentence(r.tier.review) + '.');
+	if(r.unresolvedPackages.length > 0) {
+		fact('no data', `${listing(r.unresolvedPackages)}. Calls into ${r.unresolvedPackages.length > 1 ? 'them' : 'it'} were not followed.`);
+	}
+	summary.append(facts);
+
+	if(r.findings.length > 0) {
+		const top = el('ul', 'top');
+		/* the three most telling kinds of finding, each once, with how many more are like it */
+		const kinds = new Map<string, Finding[]>();
+		for(const f of [...r.findings].sort((x, y) => rank(x) - rank(y))) {
+			kinds.set(`${f.call}|${f.capability}|${f.via}`, [...kinds.get(`${f.call}|${f.capability}|${f.via}`) ?? [], f]);
+		}
+		for(const [f, alike] of [...kinds.values()].slice(0, 3).map(fs => [fs[0], fs.length - 1] as const)) {
+			const item = el('li');
+			const a = el('a', 'jump', where(f));
+			a.href = '#code-view';
+			a.title = 'show it in the code';
+			a.addEventListener('click', ev => {
+				ev.preventDefault();
+				selectFinding(f);
+			});
+			const call = el('code', '', f.call);
+			call.title = `${describe(f)}. Input types: ${listing(f.inputTypes) || 'none'}.`;
+			item.append(a, ' ', call, ' ', el('span', 'hint', `${f.capability}${f.tags?.length ? ` (flowR: ${f.tags.join(', ')})` : ''}${f.via === 'package' ? `, inside its package through ${f.through}` : ''}${alike > 0 ? `, and ${alike} more like it` : ''}`));
+			top.append(item);
+		}
+		summary.append(top);
+	}
+
+	/* every result in sentences, for a closer look and for the shared link */
+	const all = $('all-body');
+	all.replaceChildren();
+	const section = (title: string, items: HTMLElement[]) => {
+		if(items.length === 0) {
+			return;
+		}
+		const ol = el('ol');
+		/* at most a hundred per section, the rest is in the tables below and in the downloads */
+		ol.append(...items.slice(0, 100));
+		if(items.length > 100) {
+			ol.append(el('li', 'hint', `and ${items.length - 100} more, in the table below and in report.json`));
+		}
+		all.append(el('h4', '', title), ol);
+	};
+	const jump = (text: string, go: () => void) => {
+		const a = el('a', 'jump', text);
+		a.href = '#code-view';
+		a.addEventListener('click', ev => {
+			ev.preventDefault();
+			go();
+		});
+		return a;
+	};
+	section('Risky calls', [...r.findings].sort((a, b) => rank(a) - rank(b)).map(f => {
+		const item = el('li');
+		item.append(el('code', '', f.call), ` ${describe(f)}, at `, jump(where(f), () => selectFinding(f)), '.',
+			...(f.inputTypes.length > 0 ? [el('span', 'hint', ` flowR traced the input types ${listing(f.inputTypes)}.`)] : []));
+		return item;
+	}));
+	section('Why the stricter tiers fail', r.tier.checks.filter(c => !c.met).flatMap(c => c.violations.map(v => {
+		const item = el('li');
+		item.append(`${sentence(c.tier)} fails because of ${v.reason}${v.findings.length ? ` (${plural(v.findings.length, 'finding')})` : ''}.`);
+		return item;
+	})));
+	section('Linting results', r.lint.flatMap(l => l.results.map(x => {
+		const item = el('li');
+		item.append(link(l.docs ?? Docs.linter, l.title ?? l.rule, l.about), ' at ', jump(`${x.file?.split('/').pop() ?? ''}:${x.loc?.[0] ?? '?'}`, () => selectLint(l.rule, x)), ': ', ...ticks(x.message),
+			x.quickFix ? `. flowR suggests a fix: ${x.quickFix.map(q => q.replacement ?? 'remove it').join(' or ')}.` : '.');
+		return item;
+	})));
+	$('all-results').hidden = all.childElementCount === 0;
+	/* what badgR asked flowR, each linked to its documentation */
+	const meta = $('verdict-meta');
+	meta.replaceChildren(`${plural(r.files.length, 'R file')} · ${(r.ms / 1000).toFixed(1)} s · flowR ${r.flowrVersion} · built on flowR's `,
+		link(`${Wiki}Dataflow-Graph`, 'dataflow graph'), ', ', link(Docs.functionInfo, 'function-info'), ', ', link(Docs.inputSources, 'input-sources'), ', and ',
+		link(Docs.linter, 'linter'), ' queries and its ', link(Docs.sigdb, `signature database ${r.sigdb.tag ?? ''}`.trim()), ` · ${r.policy.name}`);
+	/* two actions in sight, the files in one menu */
+	const menu = el('details', 'menu');
+	const ms = el('summary', 'button secondary small', 'Download');
+	const list = el('div', 'menu-list');
+	list.append(
+		download('badge.svg', 'image/svg+xml', svg),
+		download('report.json', 'application/json', JSON.stringify(reviewed(r), null, 2)),
+		download('report.md', 'text/markdown', markdownReport(reviewed(r))),
+		download('review.json', 'application/json', JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)),
+		copyButton('copy Markdown', () => markdownReport(reviewed(r)), 'the report as Markdown, with your review, to paste into an issue'),
+		...(allFixes(r).count > 0 ? [download('fixes.patch', 'text/x-diff', allFixes(r).patch)] : []),
+		importReviewButton());
+	menu.append(ms, list);
+	$('downloads').replaceChildren(shareButton(), playgroundLink(r, files), menu);
+
+	/* the tier ladder: one line per tier, the reasons fold out */
+	$('ladder').replaceChildren(...r.tier.checks.map(c => {
+		const spec = policy?.tiers.find(t => t.name === c.tier);
+		const item = el('li', `${c.met ? 'met' : 'failed'}${c.tier === r.tier.tier ? ' mine' : ''}`);
+		/* only more than one reason folds: a single one is said in full on the line itself */
+		const folds = c.violations.length > 1;
+		const head = el(folds ? 'summary' : 'div', 'tier-line');
+		const name = el('span', `tier-name ${TierColor[c.tier] ?? ''}`, c.tier);
+		name.title = spec?.summary ?? spec?.description ?? '';
+		head.append(el('span', 'mark', c.met ? '✓' : '✗'), name);
+		if(c.tier === r.tier.tier) {
+			head.append(el('span', 'yours', 'assigned'));
+		}
+		/* first what the tier asks for, then why the code misses it */
+		if(spec?.summary) {
+			head.append(el('span', 'tier-req', spec.summary));
+		}
+		if(c.violations.length > 0) {
+			const first = concreteReason(r, c.violations[0], c.violations.length - 1);
+			first.prepend(el('strong', '', c.violations.length > 1 ? `Misses it, first because ` : 'Misses it because '));
+			first.classList.add('why');
+			head.append(first);
+		}
+		if(folds) {
+			const d = el('details');
+			d.open = c === above;
+			const ul = el('ul');
+			ul.append(...c.violations.slice(1).map(v => {
+				const li = el('li');
+				li.append(sentence(v.reason));
+				const fs = v.findings.map(id => r.findings.find(f => f.id === id)).filter((f): f is Finding => f !== undefined);
+				for(const f of fs.slice(0, 4)) {
+					const a = el('a', 'jump', where(f));
+					a.href = '#code-view';
+					a.title = `${f.call} ${describe(f)}`;
+					a.addEventListener('click', ev => {
+						ev.preventDefault();
+						selectFinding(f);
+					});
+					li.append(' ', a);
+				}
+				if(fs.length > 4) {
+					li.append(el('span', 'hint', ` and ${fs.length - 4} more`));
+				}
+				return li;
+			}));
+			d.append(head, ul);
+			item.append(d);
+		} else {
+			item.append(head);
+		}
+		return item;
+	}));
+
+	/* sink class × origin, every class and origin of the policy */
+	const classes = policy ? [...new Set(Object.values(policy.capabilities).map(c => c.class))] : [];
+	const allClasses = [...new Set([...classes, ...r.findings.map(f => f.class)])];
+	const allOrigins = [...new Set([...policy ? Object.keys(policy.origins) : [], ...r.findings.flatMap(f => f.origins)])];
+	const matrix = $('matrix');
+	const max = Math.max(1, ...allClasses.flatMap(c => allOrigins.map(o => r.findings.filter(f => f.class === c && f.origins.includes(o)).length)));
+	const head = el('tr');
+	head.append(el('th'), ...allOrigins.map(o => {
+		const th = el('th', 'n');
+		th.append(link(Docs.inputSources, ow(o), `${sentence(OriginLong[o] ?? o)}, found with flowR's input-sources query`));
+		return th;
+	}));
+	const rows = allClasses.map(c => {
+		const tr = el('tr');
+		const th = el('th', '', cw(c));
+		th.title = policy ? `capabilities of class ${c}: ${listing(Object.entries(policy.capabilities).filter(([, v]) => v.class === c).map(([k, v]) => `${k} (${v.description ?? ''})`))}` : '';
+		tr.append(th);
+		for(const o of allOrigins) {
+			const n = r.findings.filter(f => f.class === c && f.origins.includes(o)).length;
+			const td = el('td', 'n');
+			const span = el('span', n ? (o === 'outside' ? 'hot' : 'warm') : 'zero', n ? String(n) : '·');
+			const calls = r.findings.filter(f => f.class === c && f.origins.includes(o));
+			span.title = n ? `${sentence(ClassLong[c] ?? c)}, with ${OriginLong[o] ?? o}: ${listing([...new Set(calls.map(f => `${f.call} (${where(f)})`))])}` : `none of the ${ClassLong[c] ?? c} gets ${OriginLong[o] ?? o}`;
+			if(n) {
+				span.style.opacity = String(0.55 + 0.45 * n / max);
+				span.classList.add('clickable');
+				span.addEventListener('click', () => selectFinding(calls[0]));
+			}
+			td.append(span);
+			tr.append(td);
+		}
+		return tr;
+	});
+	matrix.replaceChildren(el('thead'), el('tbody'));
+	matrix.firstElementChild?.append(head);
+	matrix.lastElementChild?.append(...rows);
+
+	/* findings with filters */
+	let shown = r.findings;
+	const filters = $('filters');
+	filters.replaceChildren();
+	const active = new Set<string>();
+	const origins = [...new Set(r.findings.flatMap(f => f.origins))];
+	const keys = [...new Set(r.findings.map(f => `class:${f.class}`)), ...new Set(r.findings.map(f => `via:${f.via}`)), ...origins.map(o => `origin:${o}`), 'review:unreviewed'];
+	for(const k of keys) {
+		const [kind, value] = k.split(':');
+		const b = el('button', 'chip', kind === 'class' ? `${cw(value)} calls` : kind === 'via' ? (value === 'package' ? 'inside packages' : 'in the app') : kind === 'review' ? 'not reviewed yet' : `values from ${ow(value)}`);
+		b.type = 'button';
+		b.dataset.key = k;
+		b.setAttribute('aria-pressed', 'false');
+		b.addEventListener('click', () => {
+			if(!active.delete(k)) {
+				active.add(k);
+			}
+			b.setAttribute('aria-pressed', String(active.has(k)));
+			shown = r.findings.filter(f => [...active].every(a => {
+				const [kind, value] = a.split(':');
+				return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : f.origins.includes(value);
+			}));
+			drawFindings();
+		});
+		filters.append(b);
+	}
+	const table = $('findings');
+	/*
+	 * Many findings come in groups: by capability, by called function, or by file. A group is one line that
+	 * says how many findings it holds and of which kind, and unfolds into its rows, ten at a time.
+	 */
+	if(view.target !== r.target || view.count !== r.findings.length) {
+		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > 8 ? 'capability' : 'none', expanded: new Set(), full: new Set() });
+	}
+	let groupBy = view.groupBy;
+	const { expanded, full } = view;
+	const PerGroup = 10;
+	const keyOf = (f: Finding) => groupBy === 'capability' ? f.capability : groupBy === 'call' ? f.call : groupBy === 'file' ? (f.file ?? '') : '';
+	const grouping = el('span', 'grouping');
+	const groupButtons = (['capability', 'call', 'file', 'none'] as const).map(g => {
+		const b = el('button', 'chip', g === 'none' ? 'no groups' : `by ${g}`);
+		b.type = 'button';
+		b.addEventListener('click', () => {
+			groupBy = view.groupBy = g;
+			expanded.clear();
+			full.clear();
+			drawFindings();
+		});
+		return b;
+	});
+	grouping.append(el('span', 'hint', 'group '), ...groupButtons);
+	filters.append(grouping);
+	const row = (f: Finding) => {
+		const tr = el('tr');
+		tr.dataset.id = f.id;
+		const call = el('td');
+		call.append(el('code', '', f.call));
+		const cap = el('td');
+		cap.append(tagLink(f.class, cw(f.class), f.via === 'package' ? Docs.sigdb : Docs.functionInfo,
+			`${sentence(ClassLong[f.class] ?? f.class)}. ${f.via === 'package' ? 'Found inside the package with flowR\'s signature database.' : 'Known from what flowR knows of the function.'}`),
+			` ${f.capability}`, ...(f.tags ?? []).map(t => tagLink('ftag', t, Docs.functionInfo, `flowR's semantic tag ${t} of ${f.via === 'package' ? f.through : f.call}`)));
+		const orig = el('td');
+		orig.append(...f.origins.map(o => tagLink(o, ow(o), Docs.inputSources, `${sentence(OriginLong[o] ?? o)}: ${listing([...new Set(f.inputTypes.map(t => TypeWords[t] ?? t))]) || 'nothing traced'}, found with flowR's input-sources query`)));
+		cap.title = `policy name: ${f.capability}`;
+		const via = el('td', '', f.via === 'package' ? `inside the package (${f.through})` : 'in the app');
+		via.title = f.via === 'package' ? `${f.call} is harmless itself, but calls ${f.through} inside its package (from flowR's signature database)` : `the app calls ${f.call} itself`;
+		call.title = `${f.call} ${describe(f)}`;
+		const rv = el('td', 'rv-cell');
+		rv.append(reviewPicker(f, true));
+		tr.append(el('td', 'mono', where(f)), call, cap, via, orig, rv);
+		tr.classList.toggle('reviewed', reviewOf(f) !== undefined);
+		tr.addEventListener('click', ev => {
+			if(!(ev.target as Element).closest('.rv-cell')) {
+				selectFinding(f);
+			}
+		});
+		return tr;
+	};
+	const drawFindings = () => {
+		$('more-findings').hidden = true;
+		$('finding-count').textContent = r.findings.length > 0 ? `${shown.length} of ${r.findings.length}` : '';
+		grouping.hidden = r.findings.length < 3;
+		groupButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(['capability', 'call', 'file', 'none'][i] === groupBy)));
+		if(r.findings.length === 0) {
+			table.replaceChildren(el('caption', 'hint', 'none'));
+			return;
+		}
+		const h = el('tr');
+		h.append(...['line', 'call', 'what it can do', 'where it happens', 'values from', 'review'].map(x => el('th', '', x)));
+		const thead = el('thead');
+		thead.append(h);
+		const body = el('tbody');
+		const groups = new Map<string, Finding[]>();
+		for(const f of [...shown].sort((x, y) => rank(x) - rank(y))) {
+			groups.set(keyOf(f), [...groups.get(keyOf(f)) ?? [], f]);
+		}
+		/* few findings in all: everything open; many: the most telling group open */
+		const openAll = shown.length <= 30;
+		let first = true;
+		for(const [key, fs] of groups) {
+			if(groupBy !== 'none') {
+				const open = expanded.has(key) || openAll || (first && expanded.size === 0);
+				const gh = el('tr', `group${open ? ' open' : ''}`);
+				const td = el('td');
+				td.colSpan = 6;
+				const open_ = fs.filter(f => reviewOf(f) === undefined).length;
+				const classes = [...new Set(fs.map(f => f.class))];
+				const origins = [...new Set(fs.flatMap(f => f.origins))];
+				const filesN = new Set(fs.map(f => f.file)).size;
+				td.append(el('span', 'g-mark', open ? '▾' : '▸'), el('code', 'g-key', key || '(no file)'), el('span', 'g-count', plural(fs.length, 'finding')),
+					...classes.map(c => el('span', `tag ${c}`, cw(c))), ...origins.map(o => el('span', `tag ${o}`, ow(o))),
+					el('span', 'hint', filesN > 1 ? ` in ${filesN} files` : ''),
+					el('span', `g-open${open_ === 0 ? ' done' : ''}`, open_ === 0 ? 'all reviewed' : `${open_} to review`));
+				td.title = groupBy === 'capability' ? policy?.capabilities[key]?.description ?? '' : '';
+				gh.append(td);
+				gh.addEventListener('click', () => {
+					if(open) {
+						expanded.delete(key);
+						if(first) {
+							expanded.add('\u0000');
+						}
+					} else {
+						expanded.add(key);
+					}
+					drawFindings();
+				});
+				body.append(gh);
+				first = false;
+				if(!open) {
+					continue;
+				}
+			}
+			const limit = groupBy === 'none' ? PerGroup * 2 : PerGroup;
+			const rows = full.has(key) ? fs : fs.slice(0, limit);
+			body.append(...rows.map(row));
+			if(fs.length > rows.length) {
+				const mr = el('tr', 'more-row');
+				const td = el('td');
+				td.colSpan = 6;
+				const b = el('button', 'button secondary small', `show the other ${fs.length - rows.length}`);
+				b.type = 'button';
+				b.addEventListener('click', () => {
+					full.add(key);
+					drawFindings();
+				});
+				td.append(b);
+				mr.append(td);
+				body.append(mr);
+			}
+		}
+		table.replaceChildren(thead, body);
+	};
+	/* a finding picked elsewhere opens its group and rows */
+	revealFinding = f => {
+		if(!table.querySelector(`tr[data-id="${CSS.escape(f.id)}"]`)) {
+			expanded.add(keyOf(f));
+			full.add(keyOf(f));
+			drawFindings();
+		}
+	};
+	drawFindings();
+
+	renderCode(r, files);
+	renderLint(r);
+	renderQueries(r);
+	$('result').scrollTop = 0;
+}
+
+/* ---------------------------------------------------------------- the signature database, as the page knows it */
+
+interface PackageData { v?: string, x: string[], c: Record<string, string[]> }
+const BaseOrder = ['base', 'stats', 'utils', 'methods', 'graphics', 'grDevices', 'datasets', 'tools', 'parallel', 'compiler', 'grid', 'splines', 'stats4', 'tcltk'];
+const packageData = new Map<string, Promise<PackageData | undefined>>();
+function loadPackageData(name: string): Promise<PackageData | undefined> {
+	let p = packageData.get(name);
+	if(p === undefined) {
+		p = fetch(`${base}pkgs/${encodeURIComponent(name)}.json`).then(r => r.ok ? r.json() as Promise<PackageData> : undefined).catch(() => undefined);
+		packageData.set(name, p);
+	}
+	return p;
+}
+
+/** the packages the code attaches, the last one first as R searches them, then base R */
+function attachedPackages(files: readonly SourceFile[]): string[] {
+	const attached = files.flatMap(f => [...f.content.matchAll(/\b(?:library|require|requireNamespace)\(\s*["']?([\w.]+)/g)].map(m => m[1]));
+	return [...new Set([...attached.reverse(), ...BaseOrder])];
+}
+
+/** the entry of a function: its package and version, and what it reaches inside the package */
+function sigdbSection(fn: string, candidates: readonly string[]): HTMLElement {
+	const box = el('div', 'sigdb');
+	box.append(el('p', 'hint', 'Looking it up in the signature database…'));
+	void (async() => {
+		for(const pkg of candidates) {
+			const data = await loadPackageData(pkg);
+			if(data?.x.includes(fn)) {
+				const head = el('p');
+				head.append(el('code', '', `${pkg}::${fn}`), ` is exported by ${pkg}${data.v ? ` ${data.v}` : ''}.`);
+				const reach = data.c[fn] ?? [];
+				const body = el('p');
+				body.append(reach.length > 0
+					? `Inside its package it reaches ${listing(reach.map(x => `${x}`))}, which badgR checks for capabilities.`
+					: 'Inside its package it reaches no function that could have a capability of the policy.');
+				const links = el('p', 'pop-links');
+				const docs = docsOf(`${pkg}::${fn}`);
+				links.append(link(Docs.sigdb, `signature database ${sigdbTag ?? ''}`.trim(), 'flowR\'s data of every CRAN package: exports, signatures, and call graphs'));
+				if(docs) {
+					links.append(link(docs, 'help page', `the R documentation of ${pkg}::${fn}`));
+				}
+				box.replaceChildren(head, body, links);
+				return;
+			}
+		}
+		box.replaceChildren(el('p', 'hint', candidates.length > 0
+			? `None of ${listing(candidates.slice(0, 4))}${candidates.length > 4 ? ', …' : ''} exports ${fn} in the data of this page. The page knows the latest CRAN version of each package, and the command line knows every version.`
+			: `The data of this page has no entry for ${fn}.`));
+	})();
+	return box;
+}
+
+/* ---------------------------------------------------------------- the code, with findings and linting results to click */
+
+interface Mark { from: number, to: number, cls: string, tip: string, open: (at: HTMLElement) => void }
+
+function renderCode(r: Report, files: readonly SourceFile[]): void {
+	const rFiles = files.filter(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path));
+	const fileOf = (f?: string) => f ?? rFiles[0]?.path ?? '';
+	const count = new Map<string, number>();
+	for(const f of r.findings) {
+		count.set(fileOf(f.file), (count.get(fileOf(f.file)) ?? 0) + 1);
+	}
+	const ordered = [...rFiles].sort((a, b) => (count.get(b.path) ?? 0) - (count.get(a.path) ?? 0));
+	const tabs = $('file-tabs');
+	const view = $('code-view');
+	const pop = $('popover');
+	let current = '';
+
+	const popover = (at: HTMLElement, fill: (box: HTMLElement) => void) => {
+		pop.replaceChildren();
+		fill(pop);
+		const close = el('button', 'close', '×');
+		close.type = 'button';
+		close.addEventListener('click', () => {
+			pop.hidden = true;
+			selected = undefined;
+			writeLink();
+		});
+		pop.prepend(close);
+		pop.hidden = false;
+		const box = view.getBoundingClientRect();
+		const t = at.getBoundingClientRect();
+		const parent = (pop.offsetParent as HTMLElement | null)?.getBoundingClientRect() ?? box;
+		pop.style.top = `${t.bottom - parent.top + 6}px`;
+		/* to the right of the code, where lines are short, so the lines below stay clickable */
+		/* right of the code, where lines are short, and always inside its section */
+		const width = Math.min(340, parent.width - 8);
+		pop.style.left = `${Math.max(0, parent.width - width - 4)}px`;
+	};
+
+	const findingBox = (f: Finding) => (box: HTMLElement) => {
+		const h = el('div', 'pop-head');
+		h.append(tagLink(f.class, cw(f.class), Docs.functionInfo, sentence(ClassLong[f.class] ?? f.class)), ' ', el('code', '', f.call));
+		box.append(h, el('p', '', `${f.call} ${describe(f)}.`));
+		const dl = el('dl');
+		const row = (k: string, v: string | Node) => {
+			const dd = el('dd');
+			dd.append(v);
+			dl.append(el('dt', '', k), dd);
+		};
+		row('via', f.via === 'package' ? link(Docs.sigdb, `inside the package, through ${f.through}`, 'from the call graph of flowR\'s signature database') : 'the app calls it directly');
+		row('origins', f.origins.length > 0 ? link(Docs.inputSources, listing(f.origins), 'traced with flowR\'s input-sources query') : 'none traced');
+		row('input types', f.inputTypes.join(', ') || 'none');
+		if(f.contract && (f.contract.injectable.length + f.contract.resource.length + f.contract.written.length) > 0) {
+			row('contracts', link(Docs.callContracts, [['injectable', f.contract.injectable], ['a resource', f.contract.resource], ['written', f.contract.written]]
+				.filter(([, v]) => v.length > 0).map(([k, v]) => `${listing(v as string[])} ${(v as string[]).length > 1 ? 'are' : 'is'} ${k as string}`).join(', and ') + '.',
+			'what flowR\'s contracts state of the parameters'));
+		}
+		box.append(dl);
+		box.append(reviewBox(f));
+		const [pkg, fn] = f.call.includes('::') ? f.call.split('::') : [undefined, f.call];
+		box.append(sigdbSection(fn, pkg ? [pkg] : []));
+	};
+
+	/* a call in the code: what flowR's signature database knows of the function */
+	const callBox = (fn: string, explicit: string | undefined) => (box: HTMLElement) => {
+		const own = rFiles.some(f => new RegExp(`(^|\\n)\\s*\`?${fn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\`?\\s*(<-|=)\\s*function`).test(f.content));
+		const h = el('div', 'pop-head');
+		h.append(el('code', 'fn-name', explicit ? `${explicit}::${fn}` : fn));
+		box.append(h);
+		if(own && !explicit) {
+			box.append(el('p', '', 'A function of the analyzed code itself. flowR follows its body like any other code.'));
+			return;
+		}
+		box.append(sigdbSection(fn, explicit ? [explicit] : attachedPackages(rFiles)));
+	};
+
+	const lintBox = (rule: string, x: LintResult) => (box: HTMLElement) => {
+		const l = r.lint.find(s => s.rule === rule);
+		const h = el('div', 'pop-head');
+		h.append(tagLink('lint', 'lint', Docs.linter, 'flowR\'s linter query'), ' ', link(l?.docs ?? 'https://github.com/flowr-analysis/flowr/wiki/Linter', l?.title ?? rule, l?.about));
+		const msg = el('p');
+		msg.append(...ticks(x.message));
+		box.append(h, msg);
+		for(const q of x.quickFix ?? []) {
+			box.append(quickFixRow(q, x.file));
+		}
+	};
+
+	const marksOf = (path: string): Map<number, Mark[]> => {
+		const marks = new Map<number, Mark[]>();
+		const lines = (rFiles.find(f => f.path === path)?.content ?? '').split('\n');
+		const add = (loc: readonly number[] | undefined, cls: string, tip: string, open: (at: HTMLElement) => void) => {
+			if(!loc) {
+				return;
+			}
+			const [l1, c1, l2, c2] = loc;
+			for(let l = l1; l <= l2; l++) {
+				const from = l === l1 ? c1 - 1 : 0;
+				const to = l === l2 ? c2 : (lines[l - 1]?.length ?? 0);
+				marks.set(l, [...marks.get(l) ?? [], { from, to, cls, tip, open }]);
+			}
+		};
+		for(const f of r.findings.filter(x => fileOf(x.file) === path)) {
+			add(f.loc, `m-sink m-${f.class}${f.origins.includes('outside') ? ' m-outside' : ''}`, `${f.call} ${describe(f)}${f.review ? ` (reviewed: ${ReviewLabel[f.review.state]})` : ''}`, at => {
+				selected = `f:${fileOf(f.file)}:${f.loc?.[0] ?? 0}:${f.call}`;
+				writeLink();
+				highlightRow(f);
+				popover(at, findingBox(f));
+			});
+		}
+		for(const l of r.lint) {
+			for(const x of l.results.filter(y => fileOf(y.file) === path)) {
+				add(x.loc, `m-lint${x.quickFix ? ' m-fix' : ''}`, `${l.title ?? l.rule}: ${x.message.replace(/`/g, '')}${x.quickFix ? ', with a quick fix' : ''}`, at => {
+					selected = `l:${l.rule}:${fileOf(x.file)}:${x.loc?.[0] ?? 0}`;
+					writeLink();
+					popover(at, lintBox(l.rule, x));
+				});
+			}
+		}
+		return marks;
+	};
+
+	const showFile = (path: string, line?: number) => {
+		current = path;
+		pop.hidden = true;
+		for(const t of tabs.children) {
+			t.setAttribute('aria-pressed', String((t as HTMLElement).dataset.path === path));
+		}
+		const content = rFiles.find(f => f.path === path)?.content ?? '';
+		const tokens = highlightLines(content);
+		const srcLines = content.split('\n');
+		const marks = marksOf(path);
+		const big = tokens.length > 3000;
+		const near = (i: number) => !big || [...marks.keys()].some(m => Math.abs(m - i) <= 5);
+		view.replaceChildren(...tokens.flatMap((toks, i) => {
+			const no = i + 1;
+			if(!near(no)) {
+				return [];
+			}
+			const ms = marks.get(no) ?? [];
+			const row = el('div', `ln${ms.some(m => m.cls.startsWith('m-sink')) ? ' hit' : ''}`);
+			row.dataset.line = String(no);
+			row.append(el('span', 'no', String(no)));
+			const text = el('span', 'src');
+			/* cut the tokens at the bounds of the marks, and wrap the marked pieces */
+			const cuts = [...new Set([0, ...ms.flatMap(m => [m.from, m.to]), ...toks.reduce<number[]>((acc, t) => [...acc, (acc.at(-1) ?? 0) + t.text.length], [])])].sort((a, b) => a - b);
+			let pos = 0;
+			const pieces: { text: string, cls: string, at: number }[] = [];
+			for(const t of toks) {
+				let start = pos;
+				for(const c of cuts.filter(c => c > pos && c < pos + t.text.length)) {
+					pieces.push({ text: t.text.slice(start - pos, c - pos), cls: t.cls, at: start });
+					start = c;
+				}
+				pieces.push({ text: t.text.slice(start - pos), cls: t.cls, at: start });
+				pos += t.text.length;
+			}
+			for(const p of pieces) {
+				const span = el('span', p.cls, p.text);
+				const over = ms.filter(m => p.at >= m.from && p.at < m.to);
+				if(over.length > 0) {
+					const m = el('span', over.map(o => o.cls).join(' '));
+					m.append(span);
+					m.tabIndex = 0;
+					m.title = `${over.map(o => o.tip).join('. ')}. Click for details.`;
+					m.addEventListener('click', ev => {
+						ev.stopPropagation();
+						over[0].open(m);
+					});
+					m.addEventListener('keydown', ev => ev.key === 'Enter' && over[0].open(m));
+					text.append(m);
+				} else if(/\btok-call\b/.test(p.cls)) {
+					/* every call opens what the signature database knows of it */
+					const before = srcLines[i]?.slice(0, p.at) ?? '';
+					const explicit = /([\w.]+):::?$/.exec(before)?.[1];
+					span.classList.add('fn-link');
+					span.title = `${explicit ? `${explicit}::` : ''}${p.text}: click for what flowR's signature database knows of it`;
+					span.tabIndex = 0;
+					const open = () => popover(span, callBox(p.text, explicit));
+					span.addEventListener('click', open);
+					span.addEventListener('keydown', ev => ev.key === 'Enter' && open());
+					text.append(span);
+				} else {
+					text.append(span);
+				}
+			}
+			if(toks.length === 0) {
+				text.append(' ');
+			}
+			row.append(text);
+			return [row];
+		}));
+		if(line !== undefined) {
+			const target = view.querySelector<HTMLElement>(`[data-line="${line}"]`);
+			view.querySelectorAll('.sel').forEach(s => s.classList.remove('sel'));
+			target?.classList.add('sel');
+			target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		}
+	};
+
+	const highlightRow = (f: Finding) => {
+		const table = $('findings');
+		table.querySelectorAll('tr.sel').forEach(t => t.classList.remove('sel'));
+		table.querySelector(`tr[data-id="${CSS.escape(f.id)}"]`)?.classList.add('sel');
+	};
+
+	tabs.replaceChildren(...ordered.slice(0, 60).map(f => {
+		const b = el('button', 'chip', `${f.path}${count.get(f.path) ? ` (${count.get(f.path)})` : ''}`);
+		b.type = 'button';
+		b.dataset.path = f.path;
+		b.addEventListener('click', () => showFile(f.path));
+		return b;
+	}));
+	tabs.hidden = rFiles.length < 2;
+
+	/* `quiet` marks the place without opening the details, as when a link brings a selection back */
+	const openAt = (path: string, loc: readonly number[] | undefined, fill: (box: HTMLElement) => void, quiet = false) => {
+		if(path !== current || loc) {
+			showFile(path, loc?.[0]);
+		}
+		if(quiet) {
+			return;
+		}
+		view.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		const target = loc ? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"] .src > span[class^="m-"]`) ?? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"]`) : null;
+		if(target) {
+			popover(target, fill);
+		}
+	};
+	selectFinding = (f, quiet = false) => {
+		revealFinding(f);
+		selected = `f:${fileOf(f.file)}:${f.loc?.[0] ?? 0}:${f.call}`;
+		writeLink();
+		highlightRow(f);
+		openAt(fileOf(f.file), f.loc, findingBox(f), quiet);
+	};
+	selectLint = (rule, x, quiet = false) => {
+		selected = `l:${rule}:${fileOf(x.file)}:${x.loc?.[0] ?? 0}`;
+		writeLink();
+		openAt(rFiles.length === 1 ? rFiles[0].path : fileOf(x.file), x.loc, lintBox(rule, x), quiet);
+	};
+	if(ordered[0]) {
+		showFile(ordered[0].path);
+	}
+}
+
+/** a flowR quick fix: what it changes, and for code from the editor, a button that applies it */
+/** the file a fix or result belongs to, among the analyzed files */
+function sourceOf(file?: string): SourceFile | undefined {
+	const rFiles = (last?.files ?? []).filter(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path));
+	return rFiles.find(f => f.path === file) ?? (rFiles.length === 1 ? rFiles[0] : undefined);
+}
+
+/** a diff, colored per line */
+function diffView(diff: string, withHeader: boolean): HTMLElement {
+	const pre = el('pre', 'diff');
+	for(const line of diff.replace(/\n$/, '').split('\n')) {
+		if(!withHeader && /^(---|\+\+\+) /.test(line)) {
+			continue;
+		}
+		const cls = line.startsWith('@@') ? 'd-hunk' : line.startsWith('+++') || line.startsWith('---') ? 'd-file' : line.startsWith('+') ? 'd-add' : line.startsWith('-') ? 'd-del' : 'd-ctx';
+		pre.append(el('span', cls, line + '\n'));
+	}
+	return pre;
+}
+
+/** puts new code into the editor and analyzes it again */
+function replaceEditorCode(text: string): void {
+	setText(codeView, text);
+	document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
+	runEditor();
+}
+
+/** a flowR quick fix: what it does, the lines before and after, and for code from the editor, a button that applies it */
+function quickFixRow(q: QuickFix, file?: string): HTMLElement {
+	const row = el('div', 'fix');
+	const head = el('div', 'fix-head');
+	head.append(el('span', 'fix-label', 'quick fix'), ' ', ...ticks(q.description));
+	row.append(head);
+	const src = sourceOf(q.file ?? file);
+	if(src) {
+		const diff = unifiedDiff(src.path, src.content, [q], 0);
+		if(diff) {
+			row.append(diffView(diff, false));
+		}
+		if(last?.fromEditor && last.files.length === 1) {
+			const b = el('button', 'button small', 'apply');
+			b.type = 'button';
+			b.title = 'apply this fix to the code in the editor and analyze again';
+			b.addEventListener('click', () => replaceEditorCode(applyFixes(codeView.state.doc.toString(), [q])));
+			head.append(' ', b);
+		}
+	}
+	return row;
+}
+
+/** every quick fix of the report, as one patch over all files */
+function allFixes(r: Report): { patch: string, count: number, files: number } {
+	const byFile = new Map<string, QuickFix[]>();
+	for(const l of r.lint) {
+		for(const x of l.results) {
+			for(const q of x.quickFix ?? []) {
+				const src = sourceOf(q.file ?? x.file);
+				if(src) {
+					byFile.set(src.path, [...byFile.get(src.path) ?? [], q]);
+				}
+			}
+		}
+	}
+	let patch = '';
+	let count = 0;
+	for(const [path, fixes] of byFile) {
+		const src = sourceOf(path) as SourceFile;
+		patch += unifiedDiff(path, src.content, fixes);
+		count += applicableFixes(src.content, fixes);
+	}
+	return { patch, count, files: byFile.size };
+}
+
+/** the flowR steps the report rests on: the request as flowR takes it, its time, and what it gave */
+const QueryDocs: Record<string, string> = {
+	'dataflow':           `${Wiki}Dataflow-Graph`,
+	'input-sources':      `${Wiki}%5BQuery%5D-Input-Sources`,
+	'linter':             `${Wiki}%5BQuery%5D-Linter`,
+	'signature-database': `${Wiki}Signature-Database`
+};
+function renderQueries(r: Report): void {
+	const qs = r.queries ?? [];
+	const total = qs.reduce((t, q) => t + q.ms, 0);
+	$('query-count').textContent = qs.length > 0 ? `${plural(qs.length, 'step')}, ${(total / 1000).toFixed(1)} s` : '';
+	const box = $('queries');
+	if(qs.length === 0) {
+		box.replaceChildren(el('p', 'hint', 'No flowR steps recorded for this report.'));
+		return;
+	}
+	const intro = el('p', 'hint q-intro');
+	const replAll = JSON.stringify(qs.filter(q => q.type !== 'dataflow' && q.type !== 'signature-database').map(q => q.request));
+	intro.append('badgR built this report from these flowR steps. Run the queries yourself in flowR\'s REPL with ',
+		el('code', '', ':query <json>'), ', or open the code in the flowR playground. ',
+		copyButton('copy all queries', () => replAll, 'all queries as one JSON array, for :query in flowR\'s REPL'));
+	const table = el('table', 'queries');
+	const head = el('tr');
+	head.append(...['step', 'request', 'took', 'result', ''].map(h => el('th', '', h)));
+	const thead = el('thead');
+	thead.append(head);
+	const tbody = el('tbody');
+	for(const q of qs) {
+		const tr = el('tr');
+		const type = el('td');
+		type.append(link(QueryDocs[q.type] ?? `${Wiki}Query-API`, q.type, `flowR's documentation of ${q.type}`));
+		/* long criterion lists are shortened on the page, the copy has them all */
+		const shown = JSON.stringify(q.request, (k, v) => Array.isArray(v) && v.length > 4 ? [...v.slice(0, 3), `… ${v.length - 3} more`] : v);
+		const req = el('td');
+		req.append(el('code', 'q-json', shown));
+		const copy = el('td');
+		if(q.type !== 'dataflow' && q.type !== 'signature-database') {
+			copy.append(copyButton('copy', () => `:query ${JSON.stringify([q.request])}`, 'this query as a command for flowR\'s REPL'));
+		}
+		tr.append(type, req, el('td', 'mono', `${q.ms} ms`), el('td', '', q.result), copy);
+		tbody.append(tr);
+	}
+	table.append(thead, tbody);
+	const wrap = el('div', 'table-wrap');
+	wrap.append(table);
+	box.replaceChildren(intro, wrap);
+}
+
+function renderLint(r: Report): void {
+	const clean = r.lint.filter(l => !l.error && l.count === 0);
+	$('lint-count').textContent = `${r.lint.length - clean.length} of ${r.lint.length} report something`;
+	const fixes = allFixes(r);
+	const bar = el('div', 'fixes-bar');
+	if(fixes.count > 0) {
+		bar.append(el('span', '', `flowR suggests ${plural(fixes.count, 'fix')}${fixes.files > 1 ? ` in ${fixes.files} files` : ''}. `));
+		if(last?.fromEditor && last.files.length === 1) {
+			const apply = el('button', 'button small', 'apply all');
+			apply.type = 'button';
+			apply.title = 'apply every fix to the code in the editor and analyze again';
+			apply.addEventListener('click', () => {
+				const src = last?.files[0];
+				if(src) {
+					replaceEditorCode(applyFixes(src.content, r.lint.flatMap(l => l.results.flatMap(x => x.quickFix ?? []))));
+				}
+			});
+			bar.append(apply);
+		}
+		bar.append(copyButton('copy patch', () => fixes.patch, 'the fixes as a unified diff, for git apply or patch -p1'),
+			download('fixes.patch', 'text/x-diff', fixes.patch));
+		const d = el('details', 'patch-view');
+		d.append(el('summary', '', 'show the patch'), diffView(fixes.patch, true));
+		bar.append(d);
+	}
+	/* nothing to see: the section starts folded */
+	($('lint').closest('details') as HTMLDetailsElement).open = clean.length < r.lint.length;
+	const cleanRow = el('div', 'lint clean');
+	cleanRow.append(el('span', 'mark', '✓'), el('span', 'hint', `${clean.length === r.lint.length ? 'All rules' : plural(clean.length, 'rule')} found nothing: `));
+	clean.forEach((l, i) => {
+		const a = link(l.docs ?? Docs.linter, l.rule, l.about ?? l.title);
+		a.className = 'rule';
+		cleanRow.append(...(i > 0 ? [' '] : []), a);
+	});
+	/* which query ran, and which tiers need which rule */
+	const intro = el('p', 'lint-intro hint');
+	const needs = (policy?.tiers ?? []).filter(t => t.lint.length > 0).map(t => `${t.name} needs ${listing(t.lint)}`);
+	intro.append('badgR asks flowR\'s ', link(Docs.linter, 'linter query'), ` for these ${plural(r.lint.length, 'rule')}${needs.length > 0 ? `. ${sentence(listing(needs))} to report nothing` : ''}, and shows the others as advice.`);
+	$('lint').replaceChildren(intro, ...(fixes.count > 0 ? [bar] : []), ...r.lint.filter(l => !clean.includes(l)).map(l => {
+		const state = l.error ? 'failed' : l.count > 0 ? 'hits' : 'clean';
+		const name = link(l.docs ?? 'https://github.com/flowr-analysis/flowr/wiki/Linter', l.rule, l.about ?? l.title);
+		name.className = 'rule';
+		const text = l.error ? `failed: ${l.error}` : l.count > 0 ? plural(l.count, 'result') : 'no results';
+		if(state === 'clean') {
+			const row = el('div', 'lint clean');
+			row.append(el('span', 'mark', '✓'), name, el('span', 'hint', text));
+			return row;
+		}
+		const d = el('details', `lint ${state}`);
+		d.open = state === 'hits' && l.count <= 5;
+		const s = el('summary');
+		s.append(el('span', 'mark', '✗'), name, el('span', 'lint-count', text));
+		d.append(s);
+		const ul = el('ul');
+		for(const x of l.results.slice(0, 200)) {
+			const item = el('li');
+			const at = el('a', 'jump mono', x.loc ? `${x.file?.split('/').pop() ?? ''}:${x.loc[0]}` : '?');
+			at.href = '#code-view';
+			at.addEventListener('click', ev => {
+				ev.preventDefault();
+				selectLint(l.rule, x);
+			});
+			item.append(at, ' ', ...ticks(x.message));
+			for(const q of x.quickFix ?? []) {
+				item.append(quickFixRow(q, x.file));
+			}
+			ul.append(item);
+		}
+		d.append(ul);
+		return d;
+	}), ...(clean.length > 0 ? [cleanRow] : []));
+}
+
+/* ---------------------------------------------------------------- the badges of the policy */
+
+function drawTierTable(): void {
+	if(policy === undefined) {
+		return;
+	}
+	const p = policy;
+	const all = [...p.tiers.map(t => ({ ...t, fallback: false })),
+		{ name: p.fallbackTier.name, color: p.fallbackTier.color, review: p.fallbackTier.review, summary: 'Misses every tier above, or flowR cannot analyze it.', description: undefined, forbid: [], lint: [] as readonly string[], fallback: true }];
+	/* one line per tier, the details unfold on demand */
+	$('tier-table').replaceChildren(...all.map(t => {
+		const li = el('li');
+		const d = el('details', 'tier-more');
+		const sum = el('summary');
+		const img = el('img');
+		img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(t.name, t.color))}`;
+		img.alt = `badgR: ${t.name}`;
+		sum.append(img, el('span', '', t.summary ?? t.description ?? `No finding of ${listing(t.forbid.map(f => f.reason ?? 'a forbidden kind'))}.`));
+		d.append(sum);
+		const body = el('div', 'tier-body');
+		if(t.description && t.description !== t.summary) {
+			body.append(el('p', '', sentence(t.description) + '.'));
+		}
+		if(t.forbid.length > 0 || t.lint.length > 0) {
+			const rules = el('ul');
+			rules.append(...t.forbid.map(f => el('li', '', `It fails on ${f.reason ?? 'a forbidden finding'}.`)));
+			if(t.lint.length > 0) {
+				const item = el('li');
+				item.append('It fails when one of these flowR linting rules reports a result: ');
+				t.lint.forEach((x, i) => {
+					const v = vocabulary?.lintRules.find(r => r.name === x);
+					const a = link(v?.docs ?? Docs.linter, x, v?.about);
+					a.className = 'rule';
+					item.append(...(i > 0 ? [i === t.lint.length - 1 ? ', and ' : ', '] : []), a);
+				});
+				item.append('.');
+				rules.append(item);
+			}
+			body.append(rules);
+		}
+		const review = el('p');
+		review.append(el('strong', '', 'Review left: '), t.review === 'full' ? 'everything.' : `${t.review}.`);
+		body.append(review);
+		if(!t.fallback) {
+			const how = el('p', 'hint');
+			how.append('flowR checks this with the ', link(Docs.inputSources, 'input-sources query', 'where the values at a sink come from'),
+				' and the ', link(Docs.sigdb, 'signature database', 'which calls reach a sink inside a package'), '.');
+			body.append(how);
+		}
+		d.append(body);
+		li.append(d);
+		return li;
+	}));
+	const top = p.tiers[1]?.name ?? p.tiers[0]?.name ?? 'silver';
+	$('snippet').textContent = [
+		'# the badge and reports for a project',
+		'./badgr app/ --badge badge.svg --md report.md   # Docker, or: npm run badgr -- app/ ...',
+		'',
+		`# in CI: fail below ${top}`,
+		`./badgr app/ --min-tier ${top}                    # exit code 2 below ${top}`,
+		'',
+		'# in the README',
+		'![badgR](badge.svg)'
+	].join('\n');
+}
+drawTierTable();
+
+/* the start: the four example tiers, one click each */
+for(const ex of Examples.slice(0, 4)) {
+	const b = el('button', 'start-card');
+	b.type = 'button';
+	const img = el('img');
+	img.alt = '';
+	const tier = policy?.tiers.find(t => t.name === ex.label) ?? (ex.label === policy?.fallbackTier.name ? policy.fallbackTier : undefined);
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(ex.label, tier?.color ?? '#6b6b6b'))}`;
+	const holder = el('span', 'start-badge');
+	holder.append(img);
+	b.append(holder, el('span', '', sentence(ex.title) + '.'));
+	b.addEventListener('click', () => {
+		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
+		setText(codeView, ex.files.map(f => f.content).join('\n'));
+		runEditor();
+	});
+	$('start').append(b);
+}
+
+/* ---------------------------------------------------------------- start */
+
+/* links into the page: `#url=` (a repository or file), `#z=` (compressed code) or `#code=` (plain code),
+   with the shared tier and selection */
+function openLink(): void {
+	const q = new URLSearchParams(location.hash.slice(1));
+	const tier = q.get('tier') ?? undefined;
+	const n = q.get('n');
+	const at = q.get('at') ?? undefined;
+	const reselect = () => {
+		if(at === undefined || last === undefined) {
+			return;
+		}
+		const [kind, a, b, c] = at.split(':');
+		if(kind === 'f') {
+			const f = last.report.findings.find(x => (x.file ?? '') === a && String(x.loc?.[0] ?? 0) === b && x.call === c)
+				?? last.report.findings.find(x => String(x.loc?.[0] ?? 0) === b);
+			if(f) {
+				selectFinding(f, true);
+			}
+		} else if(kind === 'l') {
+			const x = last.report.lint.find(l => l.rule === a)?.results.find(y => String(y.loc?.[0] ?? 0) === c);
+			if(x) {
+				selectLint(a, x, true);
+			}
+		}
+	};
+	/* the decisions of the link's reviewer join the ones in this browser */
+	const rv = q.get('rv');
+	if(rv !== null) {
+		try {
+			for(const e of parseReview(strFromU8(inflateSync(unb64url(rv))))) {
+				reviews.set(e.key, e);
+			}
+			saveReviews();
+		} catch{ /* a damaged link keeps its code and loses its review */ }
+	}
+		let code = q.get('code') ?? undefined;
+	const z = q.get('z');
+	if(z !== null) {
+		try {
+			code = strFromU8(inflateSync(unb64url(z)));
+		} catch{
+			showError('The code in this link is damaged.');
+		}
+	}
+	if(q.get('url') !== null) {
+		const url = q.get('url') as string;
+		$<HTMLInputElement>('url-input').value = url;
+		document.querySelector<HTMLButtonElement>('[data-tab="url"]')?.click();
+		const kind = describeUrl(url)?.kind;
+		if(kind === 'playground' || kind === 'own') {
+			/* the code is in the link itself, so nothing is fetched and it is analyzed at once */
+			showShared(tier, n, 'Analyzing the code of the link again…');
+			$<HTMLFormElement>('url-form').requestSubmit();
+		} else {
+			/* fetching from another site waits for a click; the link's result shows until then */
+			showShared(tier, n, `Fetch ${url} to see it here.`, () => $<HTMLFormElement>('url-form').requestSubmit());
+		}
+	} else if(code !== undefined) {
+		setText(codeView, code);
+		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
+		showShared(tier, n, 'Analyzing the code of the link again…');
+		/* the code is analyzed here, without any request, so the link's result comes back at once */
+		runEditor(reselect);
+	}
+}
+
+function showShared(tier: string | undefined, n: string | null, note: string, act?: () => void): void {
+	if(tier === undefined || policy === undefined) {
+		return;
+	}
+	const t = policy.tiers.find(x => x.name === tier) ?? policy.fallbackTier;
+	const box = $('shared');
+	const img = el('img');
+	img.alt = `badgR: ${tier}`;
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(tier, t.color))}`;
+	const p = el('p');
+	p.append(`This link was shared with the tier ${tier}${n !== null ? ` and ${plural(Number(n), 'finding')}` : ''}. ${note}`);
+	box.replaceChildren(img, p);
+	if(act) {
+		const b = el('button', 'button', 'Fetch and analyze');
+		b.type = 'button';
+		b.addEventListener('click', act);
+		box.append(b);
+	}
+	box.hidden = false;
+	$('empty').hidden = true;
+}
+openLink();

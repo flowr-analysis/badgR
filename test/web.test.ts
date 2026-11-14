@@ -1,0 +1,306 @@
+/**
+ * The playground in a real (headless) browser: it must give the same tiers as the command line, and it
+ * must stay local: every request it makes is recorded, and the test fails if one leaves the page's own
+ * site (other than the GitHub hosts of a repository it was asked to fetch), or if any request carries a body.
+ */
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as path from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
+import { chromium, type Browser, type Page, type Request } from 'playwright-core';
+
+const root = path.join(__dirname, '..');
+const dist = path.join(root, 'web-dist');
+const fixtures = path.join(__dirname, 'fixtures');
+const Types: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.wasm': 'application/wasm' };
+
+let server: http.Server;
+let origin: string;
+let browser: Browser;
+
+beforeAll(async() => {
+	const tsx = path.join(root, 'node_modules', '.bin', 'tsx');
+	execFileSync(tsx, [path.join(root, 'scripts', 'build-web.ts')], { cwd: root, stdio: 'ignore' });
+	if(!fs.existsSync(path.join(dist, 'pkgs', 'glue.json'))) {
+		execFileSync(tsx, [path.join(root, 'scripts', 'gen-web-data.ts'), path.join(dist, 'pkgs'), '--only', 'shiny,glue,httr,processx'], { cwd: root, stdio: 'ignore' });
+	}
+	server = http.createServer((req, res) => {
+		const url = new URL(req.url ?? '/', 'http://x');
+		const file = path.join(dist, decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
+		if(!file.startsWith(dist) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+			res.writeHead(404).end();
+			return;
+		}
+		res.writeHead(200, { 'Content-Type': Types[path.extname(file)] ?? 'application/octet-stream' }).end(fs.readFileSync(file));
+	});
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	browser = await chromium.launch({ args: ['--disable-gpu'] });
+}, 600_000);
+
+afterAll(async() => {
+	await browser?.close();
+	server?.close();
+});
+
+interface Session { page: Page, requests: Request[], errors: string[] }
+
+async function open(): Promise<Session> {
+	const page = await browser.newPage();
+	const requests: Request[] = [];
+	const errors: string[] = [];
+	page.on('request', r => requests.push(r));
+	page.on('pageerror', e => errors.push(e.message));
+	page.on('console', m => m.type() === 'error' && errors.push(m.text()));
+	await page.goto(origin + '/');
+	return { page, requests, errors };
+}
+
+async function tierOf(page: Page): Promise<string> {
+	await page.waitForSelector('#result:not([hidden]), #error:not([hidden])', { timeout: 120_000 });
+	const error = await page.locator('#error:not([hidden])').count();
+	if(error > 0) {
+		throw new Error(await page.locator('#error').innerText());
+	}
+	return (await page.locator('#verdict-title span').textContent() ?? '').trim();
+}
+
+/**
+ * types code into the editor like a user: a key per character and Enter per line. Playwright's fill()
+ * inserts newlines through the browser's own editing, which copies the color of the token before the
+ * cursor into an inline style that the page's content security policy rejects. Real typing and pasting
+ * go through CodeMirror and never do that.
+ */
+async function setCode(page: Page, code: string): Promise<void> {
+	await page.locator('#code .cm-content').click();
+	await page.keyboard.press('Control+A');
+	await page.keyboard.press('Delete');
+	for(const line of code.replace(/\n$/, '').split('\n')) {
+		await page.keyboard.type(line);
+		await page.keyboard.press('Enter');
+	}
+	/* closing brackets that the editor inserted and the typing stepped over leave nothing behind */
+	await page.locator('#code .cm-content', { hasText: code.split('\n')[0] }).waitFor();
+}
+
+/** loads an example from the menu */
+async function pickExample(page: Page, label: string): Promise<void> {
+	await page.click('[data-tab="paste"]');
+	await page.click('#examples-label');
+	await page.click(`#examples button[data-label="${label}"]`);
+}
+
+/** every request stays on the page's site, except the hosts allowed, and none sends data */
+function expectLocal(requests: readonly Request[], allowedHosts: readonly string[] = []): void {
+	const outside = requests.filter(r => {
+		const u = new URL(r.url());
+		return u.protocol !== 'data:' && u.protocol !== 'blob:' && u.origin !== origin && !allowedHosts.includes(u.host);
+	});
+	expect(outside.map(r => r.url())).toEqual([]);
+	expect(requests.filter(r => r.method() !== 'GET').map(r => `${r.method()} ${r.url()}`)).toEqual([]);
+	expect(requests.filter(r => r.postData() !== null).map(r => r.url())).toEqual([]);
+}
+
+describe('the playground', () => {
+	test.each([
+		['gold', 'gold/app.R'],
+		['silver', 'silver/app.R'],
+		['bronze', 'bronze/app.R'],
+		['none', 'none/app.R'],
+		['bronze', 'param/helper.R']
+	])('gives %s for an upload of %s, as the command line does, and stays local', async(tier, file) => {
+		const { page, requests, errors } = await open();
+		await page.setInputFiles('#file-input', path.join(fixtures, file));
+		expect(await tierOf(page)).toBe(tier);
+		expectLocal(requests);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('analyzes two uploads of the same name as two files', async() => {
+		const { page, requests, errors } = await open();
+		await page.setInputFiles('#file-input', ['bronze/app.R', 'none/app.R'].map(f => path.join(fixtures, f)));
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#findings tbody tr').count()).toBe(2);
+		expect(await page.locator('#file-tabs button').count()).toBe(2);
+		expectLocal(requests);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('analyzes a pasted script and an example', async() => {
+		const { page, requests, errors } = await open();
+		await page.click('[data-tab="paste"]');
+		await setCode(page, 'x <- readline()\nsystem(x)\n');
+		await page.click('#analyze-code');
+		expect(await tierOf(page)).toBe('none');
+		await pickExample(page, 'bronze');
+		await page.click('#analyze-code');
+		/* a locator, not waitForFunction: the page's content security policy forbids the eval the latter needs */
+		await page.locator('#verdict-title', { hasText: 'example: bronze' }).waitFor({ timeout: 120_000 });
+		expect(await tierOf(page)).toBe('bronze');
+		expect(await page.locator('#findings tbody tr').count()).toBe(1);
+		expectLocal(requests);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('switching examples does not run the analysis again, it shows the earlier result', async() => {
+		const { page, errors } = await open();
+		await page.click('[data-tab="paste"]');
+		await pickExample(page, 'none');
+		await page.click('#analyze-code');
+		expect(await tierOf(page)).toBe('none');
+		await pickExample(page, 'gold');
+		/* not analyzed yet: the old result stays, marked as stale, and nothing runs */
+		expect(await page.locator('#result.stale').count()).toBe(1);
+		expect(await page.locator('#progress:not([hidden])').count()).toBe(0);
+		await pickExample(page, 'none');
+		await page.locator('#result:not(.stale)').waitFor({ timeout: 5_000 });
+		expect(await page.locator('#progress:not([hidden])').count()).toBe(0);
+		expect(await tierOf(page)).toBe('none');
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('a link brings back the code, the tier, and the selected finding', async() => {
+		const { page, errors } = await open();
+		await page.click('[data-tab="paste"]');
+		await setCode(page, 'x <- readline()\nsystem(x)\n');
+		await page.click('#analyze-code');
+		expect(await tierOf(page)).toBe('none');
+		await page.locator('#findings tbody tr').first().click();
+		const link = page.url();
+		expect(link).toMatch(/#z=.*&tier=none&n=1&at=f/);
+		const again = await browser.newPage();
+		await again.goto(link);
+		expect(await tierOf(again)).toBe('none');
+		/* the selection comes back marked, without opening its details over the page */
+		await again.locator('#findings tr.sel').waitFor({ timeout: 10_000 });
+		expect(await again.locator('#popover:not([hidden])').count()).toBe(0);
+		expect(await again.locator('#code .cm-content').innerText()).toContain('system(x)');
+		expect(errors).toEqual([]);
+		await again.close();
+		await page.close();
+	}, 180_000);
+
+	test('analyzes a flowR playground link without any request, and links back to the playground', async() => {
+		const { page, requests, errors } = await open();
+		await page.click('[data-tab="url"]');
+		await page.fill('#url-input', Playground.link({ code: 'library(shiny)\nx <- readline()\nsystem(x)\n', name: 'app.R' }));
+		await page.locator('#url-note', { hasText: 'flowR playground' }).waitFor();
+		await page.click('#url-form button');
+		expect(await tierOf(page)).toBe('none');
+		const back = await page.locator('#downloads a', { hasText: 'flowR playground' }).getAttribute('href');
+		expect(back).toMatch(/^https:\/\/flowr-analysis\.github\.io\/flowr\/wiki\/playground\/#c=/);
+		expectLocal(requests);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('the theme switch steps through auto, light, and dark, and keeps the choice', async() => {
+		const { page, errors } = await open();
+		const theme = () => page.evaluate(() => document.documentElement.dataset.theme ?? 'auto');
+		expect(await theme()).toBe('auto');
+		await page.click('#theme');
+		expect(await theme()).toBe('light');
+		await page.click('#theme');
+		expect(await theme()).toBe('dark');
+		await page.reload();
+		expect(await theme()).toBe('dark');
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 60_000);
+
+	test('groups many findings and keeps the report in place while it analyzes', async() => {
+		const { page, errors } = await open();
+		await page.setInputFiles('#file-input', path.join(fixtures, 'bronze/app.R'));
+		expect(await tierOf(page)).toBe('bronze');
+		const top = () => page.locator('#verdict-title').evaluate(e => e.getBoundingClientRect().top);
+		const before = await top();
+		await page.setInputFiles('#file-input', path.join(fixtures, 'large/app.R'));
+		await page.locator('body.busy').waitFor();
+		expect(await top()).toBe(before);
+		await page.locator('body:not(.busy)').waitFor({ timeout: 280_000 });
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#findings tr.group').count()).toBe(1);
+		expect(await page.locator('#findings tr[data-id]').count()).toBe(10);
+		await page.locator('#findings tr.more-row button').click();
+		expect(await page.locator('#findings tr[data-id]').count()).toBe(1500);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 300_000);
+
+	test('marks a finding as tolerated without changing the tier, and the link carries the review', async() => {
+		const { page, errors } = await open();
+		await page.click('[data-tab="paste"]');
+		await setCode(page, 'x <- readline()\nsystem(x)\n');
+		await page.click('#analyze-code');
+		expect(await tierOf(page)).toBe('none');
+		await page.locator('#findings tr[data-id] .rv-tolerated').first().click();
+		await page.locator('#findings tr.reviewed').first().waitFor();
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('.stat', { hasText: '1 of 1 reviewed' }).count()).toBe(1);
+		const link = page.url();
+		expect(link).toContain('rv=');
+		const again = await browser.newPage();
+		await again.addInitScript(() => localStorage.clear());
+		await again.goto(link);
+		expect(await tierOf(again)).toBe('none');
+		await again.locator('#findings tr.reviewed').first().waitFor();
+		expect(errors).toEqual([]);
+		await again.close();
+		await page.close();
+	}, 180_000);
+
+	test('applies a flowR quick fix to the code in the editor', async() => {
+		const { page, errors } = await open();
+		await page.click('[data-tab="paste"]');
+		await setCode(page, 'x <- readline()\nsystem(paste("ls", x))\n');
+		await page.click('#analyze-code');
+		expect(await tierOf(page)).toBe('none');
+		const fix = page.locator('#lint .fix button', { hasText: 'apply' }).first();
+		await fix.click();
+		await page.locator('#code .cm-content', { hasText: 'shQuote(x)' }).waitFor({ timeout: 5_000 });
+		expect(await page.locator('#lint a.rule', { hasText: 'unescaped-arguments' }).getAttribute('href')).toContain('Unescaped-Arguments');
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('fetches a GitHub repository only from GitHub, and only downloads', async() => {
+		const { page, requests, errors } = await open();
+		/* GitHub is served from the fixtures, so the test needs no network and sees exactly what the page asks for */
+		await page.route('https://api.github.com/**', route => {
+			const u = new URL(route.request().url());
+			const body = u.pathname.endsWith('/repos/someone/app') ? { default_branch: 'main' }
+				: { truncated: false, tree: [{ path: 'R/helper.R', type: 'blob' }, { path: 'app.R', type: 'blob' }, { path: 'README.md', type: 'blob' }] };
+			return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) });
+		});
+		await page.route('https://raw.githubusercontent.com/**', route => {
+			const file = route.request().url().endsWith('app.R') ? 'none/app.R' : 'param/helper.R';
+			return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: fs.readFileSync(path.join(fixtures, file), 'utf-8') });
+		});
+		await page.click('[data-tab="url"]');
+		await page.fill('#url-input', 'https://github.com/someone/app');
+		await page.click('#url-form button');
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#file-tabs button').count()).toBe(2);
+		expectLocal(requests, ['api.github.com', 'raw.githubusercontent.com']);
+		/* the README is not downloaded: only R files are */
+		expect(requests.some(r => r.url().includes('README'))).toBe(false);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('the content security policy forbids scripts from elsewhere and form submissions', async() => {
+		const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf-8');
+		const csp = /Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1] ?? '';
+		expect(csp).toContain("default-src 'none'");
+		expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'");
+		expect(csp).toContain("form-action 'none'");
+		expect(csp).not.toContain('unsafe-inline');
+	});
+});

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Own files only, plus GitHub or a typed URL on request, and no forms. The nonce admits the editor's styles. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'nonce-badgr'; img-src 'self' data: blob:; connect-src 'self' data: https:; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>badgR playground</title>
+<meta name="description" content="Policy tiers for R scripts, Shiny apps, and projects, computed with flowR in your browser.">
+<link rel="icon" href="badgr-icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="./"><img src="badgr-icon.svg" alt="" width="30" height="35">badgR</a>
+  <span class="tagline">security tiers for R code, using flowR's static analysis</span>
+<div class="local" role="note">
+  <strong>Local.</strong> Your code is analyzed in this browser and never sent anywhere.
+  <details class="how"><summary>How we know</summary>
+    <div class="how-body">
+      <p>flowR, compiled to JavaScript and WebAssembly, runs in a web worker of this page. The page makes only these requests:</p>
+      <ul>
+        <li>its own files: the page, its scripts, and the two WebAssembly parsers,</li>
+        <li>the data of each R package your code loads, from <code>pkgs/&lt;package&gt;.json</code> on this site, so the request names the package but carries none of your code,</li>
+        <li>and only when you ask for it, the GitHub repository or URL you enter. Those requests download and never send anything.</li>
+      </ul>
+      <p>The page's content security policy, which the browser enforces, allows scripts only from this site and
+        forbids form submissions. Uploaded files are read in the browser
+        with the File API, and downloads of reports are created in the browser as well.</p>
+      <p>The test suite (<code>test/web.test.ts</code>) opens this page in headless Chromium, analyzes uploads, pasted
+        code, and a GitHub repository, and records every request. It fails when a request goes to any host but
+        this site and the GitHub hosts of the requested repository, uses another method than <code>GET</code>, or carries a body.</p>
+      <p>To check it yourself, open the network tab of your browser's developer tools while you analyze, or go
+        offline once the page has loaded and analyze an upload.</p>
+    </div>
+  </details>
+</div>
+  <span class="versions" id="versions">
+    <a class="ver" id="v-flowr" href="https://github.com/flowr-analysis/flowr" title="the static analysis badgR runs"><span class="k">flowR</span><span class="v">…</span></a>
+    <a class="ver" id="v-sigdb" href="https://github.com/flowr-analysis/flowr/wiki/Signature-Database" title="flowR's signature database: exports and call graphs of base R and CRAN"><span class="k">sigdb</span><span class="v">…</span></a>
+    <span class="ver" id="v-badgr"><span class="k">badgR</span><span class="v">…</span></span>
+    <button type="button" class="theme" id="theme" title="light, dark, or as the system">auto</button>
+  </span>
+</header>
+
+<main class="split">
+  <section class="pane input" aria-label="input">
+   <div class="pane-inner">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="false" data-tab="upload">Upload</button>
+      <button role="tab" aria-selected="true" data-tab="paste">Code</button>
+      <button role="tab" aria-selected="false" data-tab="url">URL</button>
+      <button role="tab" aria-selected="false" data-tab="policy">Policy</button>
+    </div>
+
+    <div class="panel" data-panel="paste">
+      <div class="row examples">
+        <details class="menu" id="examples-menu">
+          <summary class="button secondary small" id="examples-label">Load an example</summary>
+          <div class="menu-list examples-list" id="examples"></div>
+        </details>
+        <span class="hint">or paste R code below</span>
+      </div>
+      <div id="code" class="editor"></div>
+      <div class="row">
+        <button class="button" id="analyze-code" title="Ctrl+Enter">Analyze</button>
+        <button type="button" class="button secondary toggle" id="live" aria-pressed="false" title="analyze again shortly after each edit">Live</button>
+        <span id="code-status" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="upload" hidden>
+      <label class="drop" id="drop">
+        <input type="file" id="file-input" multiple accept=".R,.r,.Rmd,.rmd,.qmd,.zip,DESCRIPTION">
+        <span class="drop-main">Drop R files, a folder, or a .zip</span>
+        <span class="drop-sub">or click to choose</span>
+      </label>
+      <div class="row">
+        <label class="button secondary"><input type="file" id="folder-input" webkitdirectory hidden>Choose a folder</label>
+        <span class="hint">badgR reads .R, .Rmd, .qmd, and DESCRIPTION files and skips renv and .git folders.</span>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="url" hidden>
+      <form id="url-form" class="row">
+        <input type="text" id="url-input" placeholder="github.com/owner/repo, a gist, GitLab, a CRAN package, a flowR playground link, or an .R or .zip URL" required autocomplete="off" spellcheck="false">
+        <button type="submit" class="button">Fetch</button>
+      </form>
+      <p class="hint" id="url-note" aria-live="polite"></p>
+      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages (from their mirror on GitHub), and links to the flowR playground or to this page, whose code travels in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow downloads from other sites (CORS).</p>
+    </div>
+
+    <div class="panel" data-panel="policy" hidden>
+      <div class="row">
+        <div class="seg" role="group" aria-label="policy view">
+          <button type="button" data-view="grid" aria-pressed="true">Grid</button>
+          <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
+        </div>
+        <button class="button secondary small" id="policy-reset">Reset</button>
+        <span id="policy-status" class="hint"></span>
+      </div>
+      <div id="policy-visual"></div>
+      <div id="policy" class="editor tall" hidden></div>
+      <p class="hint">Tier changes apply at once. Changes to where values come from, to what a call can do, or to the linting rules need a new analysis.</p>
+    </div>
+
+    <details class="badges-box">
+      <summary>The badges <span class="hint">strictest first, from the current policy</span></summary>
+      <ol class="tier-list" id="tier-table"></ol>
+      <details class="use"><summary>Use the badge in a README or in CI</summary><pre class="snippet" id="snippet"></pre></details>
+    </details>
+   </div>
+  </section>
+
+  <section class="pane report" aria-label="report">
+    <div id="empty" class="empty">
+      <p>Analyze the code in the editor, upload a project, fetch one from GitHub, or start with an example.</p>
+      <div class="start" id="start"></div>
+    </div>
+
+    <div id="shared" class="shared" hidden></div>
+
+    <div id="progress" hidden aria-live="polite">
+      <div class="steps" id="steps"></div>
+      <div class="bar-track"><div id="bar-fill"></div></div>
+      <p id="progress-text" class="hint"></p>
+    </div>
+
+    <div id="error" class="error" hidden role="alert"></div>
+
+    <div id="result" hidden>
+      <div class="verdict">
+        <div class="verdict-head">
+          <div class="verdict-badge" id="badge"></div>
+          <h2 id="verdict-title"></h2>
+        </div>
+        <p id="verdict-req" class="requirement"></p>
+        <div id="summary" class="summary"></div>
+        <div class="actions" id="downloads"></div>
+        <details class="all" id="all-results"><summary>All results in sentences</summary><div id="all-body"></div></details>
+        <p id="verdict-meta" class="meta"></p>
+      </div>
+
+      <div class="block two">
+        <details open>
+          <summary><h3>Tiers</h3></summary>
+          <ol class="ladder" id="ladder"></ol>
+        </details>
+        <details open>
+          <summary><h3>Risky calls × where their values come from</h3></summary>
+          <div class="table-wrap"><table class="matrix" id="matrix"></table></div>
+        </details>
+      </div>
+
+      <details class="block" open>
+        <summary><h3>Findings <span id="finding-count" class="count"></span></h3></summary>
+        <div class="row filters" id="filters"></div>
+        <div class="table-wrap"><table class="findings" id="findings"></table></div>
+        <button type="button" class="button secondary small" id="more-findings" hidden></button>
+      </details>
+
+      <details class="block code-block" open>
+        <summary><h3>Code</h3></summary>
+        <div class="file-tabs" id="file-tabs"></div>
+        <div class="code" id="code-view" tabindex="0"></div>
+        <div id="popover" class="popover" hidden></div>
+      </details>
+
+      <details class="block" open>
+        <summary><h3>flowR linting rules <span id="lint-count" class="count"></span></h3></summary>
+        <div id="lint"></div>
+      </details>
+
+      <details class="block" open>
+        <summary><h3>flowR queries <span id="query-count" class="count"></span></h3></summary>
+        <div id="queries"></div>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer id="footer"></footer>
+</body>
+</html>
