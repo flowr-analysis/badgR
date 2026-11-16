@@ -11,7 +11,8 @@ import { ArgProp, CallProp } from '@eagleoutice/flowr/dataflow/environments/buil
 import type { BuiltInIndex } from '@eagleoutice/flowr/dataflow/environments/query-fn-props';
 import type { NodeId } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/processing/node-id';
 import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
-import { type CapabilitySpec, type Policy, lintRulesOf } from './policy-core';
+import { type CapabilitySpec, type FileRoleName, type Policy, FileRoles, lintRulesOf } from './policy-core';
+import type { FileRole } from '@eagleoutice/flowr/project/context/flowr-file';
 import { LintingRules } from '@eagleoutice/flowr/linter/linter-rules';
 import { type Finding, type LintResult, type LintSummary, type QuickFix, type TierResult, assignTier } from './tiers';
 
@@ -36,6 +37,8 @@ export interface Progress {
 	readonly total?:  number
 	/** about how long the whole analysis still takes, from when this was sent, in milliseconds */
 	readonly etaMs?:  number
+	/** about how long the current phase still takes, from when this was sent, in milliseconds */
+	readonly phaseEtaMs?: number
 }
 
 export type ProgressListener = (p: Progress) => void;
@@ -198,10 +201,7 @@ export interface LintEndpoint {
  * A rule over the time limit stops its worker and counts as not run; the next rules go to a fresh worker,
  * which reads the code again. Reading the code does not count against a rule's limit.
  */
-/** how long a linting worker may take to read the code before its rules count as not run */
-const MaxReadSeconds = 900;
-
-export function lintInWorkers(spawn: () => LintEndpoint, limitSeconds: number): { runner: LintRunner, stop: () => void } {
+export function lintInWorkers(spawn: () => LintEndpoint, limitSeconds: number, readSeconds: number): { runner: LintRunner, stop: () => void } {
 	let current: LintEndpoint | undefined;
 	let stopped = false;
 	const failed = (rule: string, error: string) => ({ summary: { rule, ...ruleDocs(rule), count: 0, results: [], error } });
@@ -219,12 +219,12 @@ export function lintInWorkers(spawn: () => LintEndpoint, limitSeconds: number): 
 			}
 			let readTimer: ReturnType<typeof setTimeout> | undefined;
 			const ready = await Promise.race([w.next(), new Promise<'timeout'>(resolve => {
-				readTimer = setTimeout(() => resolve('timeout'), MaxReadSeconds * 1000);
+				readTimer = setTimeout(() => resolve('timeout'), readSeconds * 1000);
 			})]);
 			clearTimeout(readTimer);
 			if(ready === 'timeout' || ready.type !== 'lint-ready') {
 				w.terminate();
-				const error = ready === 'timeout' ? `the linting worker did not read the code within ${MaxReadSeconds} s`
+				const error = ready === 'timeout' ? `the linting worker did not read the code within ${readSeconds} s (lintReadTimeout in the policy)`
 					: ready.type === 'lint-failed' ? ready.error : 'the linting worker did not start';
 				for(const rule of queue.splice(0)) {
 					done(failed(rule, error));
@@ -300,6 +300,14 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	const idx = ctx.env.builtInIndex;
 	const caps = compile(policy);
 	const trusted = policy.trusted.map(r => new RegExp(r));
+	const allowed = policy.allow.map(r => new RegExp(r));
+	/* what each file is for, from flowR's file roles; a file without one is a plain source */
+	const roleByPath = new Map<string, FileRoleName>();
+	for(const role of [...FileRoles].reverse()) {
+		for(const f of (ctx.files.getFilesByRole(role as FileRole) ?? []) as readonly { path(): string }[]) {
+			roleByPath.set(String(f.path()), role);
+		}
+	}
 	const qualified = Dataflow.qualifyAll(df.graph, true);
 
 	interface Candidate { id: NodeId, call: string, cap: CompiledCapability, via: 'direct' | 'package', through?: string, contract?: Finding['contract'], tags: string[] }
@@ -326,6 +334,9 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		const name = q !== undefined ? String(Identifier.getName(q)) : String(Identifier.getName((v as { name: Parameters<typeof Identifier.getName>[0] }).name));
 		const ns = q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined;
 		const call = ns === undefined ? name : `${ns}::${name}`;
+		if(allowed.some(r => r.test(call))) {
+			continue;
+		}
 		const direct = capabilityOf(caps, idx, name, ns);
 		if(direct !== undefined) {
 			candidates.push({ id, call, cap: direct, via: 'direct', tags: tagsOf(name, ns) });
@@ -381,7 +392,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			at += part.length;
 			const own = (Date.now() - tracing) / at * (crit.length - at);
 			const bound = lintBound();
-			progress({ phase: 'origins', message, done: at, total: crit.length, etaMs: Math.max(own, bound ?? 0) });
+			progress({ phase: 'origins', message, done: at, total: crit.length, etaMs: Math.max(own, bound ?? 0), phaseEtaMs: own });
 			await breathe();
 			/* about four updates a second: bigger batches when the calls trace fast */
 			batch = Math.max(1, Math.min(64, Math.round(part.length * 250 / Math.max(1, ms))));
@@ -395,6 +406,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		return {
 			id:         String(c.id),
 			file:       node?.info?.file,
+			role:       roleByPath.get(node?.info?.file ?? '') ?? 'source',
 			loc:        range ? [range[0], range[1], range[2], range[3]] as const : undefined,
 			call:       c.call,
 			capability: c.cap.name,
@@ -420,7 +432,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			const left = rules.filter(r => !lintDone.has(r));
 			const running = lintCurrent !== undefined && left.includes(lintCurrent.rule) ? lintCurrent.rule : left[0];
 			progress({ phase: 'lint', message: left.length === 0 ? `${rules.length} linting rule(s) done` : `linting rule ${running}`,
-				done: lintDone.size, total: rules.length, etaMs: lintBound() });
+				done: lintDone.size, total: rules.length, etaMs: lintBound(), phaseEtaMs: lintBound() });
 		};
 		onLintChange = () => {
 			tell();

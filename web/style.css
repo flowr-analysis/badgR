@@ -111,7 +111,8 @@ details.inline[open] p { margin: 6px 0 2px; max-width: 760px; }
 .split { display: grid; grid-template-columns: minmax(380px, 5fr) 7fr; min-height: calc(100vh - 110px); }
 .pane { padding: 14px 20px 24px; min-width: 0; }
 .pane.input { border-right: 1px solid var(--line); background: var(--pane); }
-@media (min-width: 1000px) { .pane-inner { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding-bottom: 12px; scrollbar-width: thin; } }
+/* a scroll container clips sideways too: the inline padding keeps focus rings at its edges visible */
+@media (min-width: 1000px) { .pane-inner { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: 0 4px 12px; margin: 0 -4px; scrollbar-width: thin; } }
 @media (max-width: 999px) { .split { grid-template-columns: 1fr; } .pane.input { border-right: 0; border-bottom: 1px solid var(--line); } }
 @media (max-width: 520px) { .pane { padding: 12px 12px 20px; } .bar, .local { padding-left: 12px; padding-right: 12px; } }
 
@@ -666,3 +667,10 @@ html, body { overflow-x: clip; }
 .vnumber { width: 6em; font: inherit; }
 .block.two > * { min-width: 0; }
 @media (max-width: 600px) { #progress .progress-line { flex-wrap: wrap; gap: 0 var(--s3); } #progress-text { flex-basis: 100%; } }
+
+/* findings by file role: rows per role under each class, unshipped roles dimmed */
+.top-label { margin: var(--s3) 0 var(--s1); color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; }
+.matrix .role-row th.m-role { padding-left: 14px; font-weight: 400; font-size: 12px; color: var(--muted); }
+.matrix .role-row.unshipped { opacity: .6; }
+.tag.role { border-style: dashed; }
+.tag.role.unshipped { opacity: .7; }

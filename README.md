@@ -19,7 +19,13 @@ pass your own with `--policy`.
 flowR's linting rules run next to the rest of the analysis, each with a time limit (`lintTimeout`
 in the policy, 120 seconds by default). A rule that takes longer is stopped and counts as not run,
 so no tier that needs it is reached. (A browser without nested web workers runs the rules one after
-the other, without the limit.)
+the other, without the limit.) `lintReadTimeout` limits how long a linting worker may read the
+code (900 seconds), and `timeout` the whole analysis (no limit by default; `--timeout` overrides it).
+
+Findings carry flowR's file role: `source`, `test`, `vignette`, `install` (`inst/`), or `startup`
+(`.Rprofile`). Only the roles in `shipped` (by default source, install, and startup) decide the tier;
+a forbid rule can name other roles with `files:`. `allow` lists calls (regular expressions on
+`pkg::fn`) that never become findings; the default policy allows none.
 
 Playground: <https://flowr-analysis.github.io/badgR/> (runs in the browser, your code stays local)
 

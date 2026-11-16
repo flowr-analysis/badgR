@@ -67,7 +67,7 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 	const start = Date.now();
 	/* flowR reports nothing while it builds the dataflow graph: estimate that step from the lines of code */
 	const lines = req.files.filter(f => RFilePattern.test(f.path)).reduce((n, f) => n + f.content.split('\n').length, 0);
-	const progress = (p: Progress) => post({ type: 'progress', id: req.id, progress: p.phase === 'dataflow' && p.etaMs === undefined ? { ...p, etaMs: lines * MsPerLine } : p });
+	const progress = (p: Progress) => post({ type: 'progress', id: req.id, progress: p.phase === 'dataflow' && p.etaMs === undefined ? { ...p, etaMs: lines * MsPerLine, phaseEtaMs: lines * MsPerLine } : p });
 	log.updateSettings(s => {
 		s.settings.minLevel = LogLevelNames.fatal;
 	});
@@ -83,6 +83,7 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 		files:        rFiles.map(f => f.path),
 		generatedAt:  new Date().toISOString()
 	};
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		progress({ phase: 'files', message: `${rFiles.length} R file(s)`, done: rFiles.length, total: rFiles.length });
 		if(rFiles.length === 0) {
@@ -107,18 +108,24 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 
 		const packages = [...loaded].map(([name, p]) => ({ name, v: p.v, x: p.x }));
 		const analyzer = await buildAnalyzer(req.files, packages);
-		lint = lintWorkers(req.files, packages, policy.lintTimeout);
-		const result = await analyzeWith(analyzer, policy, (pkg, fn) => {
+		lint = lintWorkers(req.files, packages, policy.lintTimeout, policy.lintReadTimeout);
+		const work = analyzeWith(analyzer, policy, (pkg, fn) => {
 			const p = loaded.get(pkg);
 			if(p === undefined || !p.x.includes(fn)) {
 				return undefined;
 			}
 			return p.c[fn] ?? [];
 		}, progress, partial => post({ type: 'partial', id: req.id, report: finishReport(policy, base, start, partial) }), lint?.runner);
+		/* the limit counts from the start of the run; flowR does not yield while it builds the dataflow graph, so it is checked between the steps */
+		const limit = policy.timeout;
+		const result = limit === undefined ? await work : await Promise.race([work, new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`timeout after ${limit} s (timeout in the policy)`)), Math.max(0, limit * 1000 - (Date.now() - start)));
+		})]);
 		return finishReport(policy, base, start, result);
 	} catch(e) {
 		return finishReport(policy, base, start, { error: e instanceof Error ? e.message : String(e) });
 	} finally {
+		clearTimeout(timer);
 		lint?.stop();
 	}
 }
@@ -136,7 +143,7 @@ async function buildAnalyzer(files: readonly SourceFile[], packages: readonly Li
 }
 
 /** the linting rules run in workers of their own, next to the rest of the analysis, see {@link lintInWorkers} */
-function lintWorkers(files: readonly SourceFile[], packages: readonly LintPackage[], limitSeconds: number): ReturnType<typeof lintInWorkers> | undefined {
+function lintWorkers(files: readonly SourceFile[], packages: readonly LintPackage[], limitSeconds: number, readSeconds: number): ReturnType<typeof lintInWorkers> | undefined {
 	if(typeof Worker === 'undefined') {
 		return undefined;
 	}
@@ -154,7 +161,7 @@ function lintWorkers(files: readonly SourceFile[], packages: readonly LintPackag
 			run:       rule => w.postMessage({ type: 'lint-rule', rule } satisfies WorkerRequest),
 			terminate: () => w.terminate()
 		};
-	}, limitSeconds);
+	}, limitSeconds, readSeconds);
 }
 
 let lint: ReturnType<typeof lintWorkers>;

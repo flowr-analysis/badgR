@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parsePolicy, DefaultLintTimeout, NoOrigin, type ForbidRule } from '../src/policy-core';
+import { parsePolicy, DefaultLintTimeout, DefaultLintReadTimeout, FileRoles, NoOrigin, type ForbidRule } from '../src/policy-core';
 import { matchesRule, type Finding } from '../src/tiers';
 import { gridOf, rulesOf, shapeOf } from '../web/policy-visual';
 
@@ -18,7 +18,7 @@ function* findings(): Generator<Finding> {
 		}
 	}
 }
-const blocks = (rules: readonly ForbidRule[], f: Finding) => rules.some(r => matchesRule(r, f));
+const blocks = (rules: readonly ForbidRule[], f: Finding) => rules.some(r => matchesRule(r, f, policy.shipped));
 
 describe('the policy grid', () => {
 	test.each(policy.tiers.map(t => [t.name, t.forbid] as const))('reads and writes the rules of %s without changing what they forbid', (_, forbid) => {
@@ -61,5 +61,49 @@ describe('the time limit of a linting rule', () => {
 
 	test.each(['0', '-3', 'soon', '.inf', '9999999'])('rejects %s', v => {
 		expect(() => parsePolicy(withLimit(`lintTimeout: ${v}`), 'p.yaml', '')).toThrow(/lintTimeout/);
+	});
+});
+
+describe('the other time limits', () => {
+	const text = fs.readFileSync(path.join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8');
+	test('the reading limit defaults, the whole analysis has none by default', () => {
+		expect(parsePolicy(text.replace(/^lintReadTimeout:.*$/m, ''), 'p.yaml', '').lintReadTimeout).toBe(DefaultLintReadTimeout);
+		expect(policy.timeout).toBeUndefined();
+		expect(parsePolicy(`${text}\ntimeout: 60\n`, 'p.yaml', '').timeout).toBe(60);
+	});
+	test.each(['lintReadTimeout: 0', 'timeout: -1', 'timeout: soon'])('rejects %s', line => {
+		expect(() => parsePolicy(`${text.replace(/^lintReadTimeout:.*$/m, '')}\n${line}\n`, 'p.yaml', '')).toThrow(/Timeout|timeout/);
+	});
+});
+
+describe('file roles and allowed calls', () => {
+	const text = fs.readFileSync(path.join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8');
+	const f = (role: Finding['role']): Finding => ({ id: '1', call: 'base::system', capability: 'shell', class: 'severe', via: 'direct', origins: ['outside'], inputTypes: [], role });
+
+	test('a rule applies to the shipped files unless it names others', () => {
+		expect(policy.shipped).toEqual(['source', 'install', 'startup']);
+		expect(matchesRule({}, f('source'), policy.shipped)).toBe(true);
+		expect(matchesRule({}, f(undefined), policy.shipped)).toBe(true);
+		expect(matchesRule({}, f('test'), policy.shipped)).toBe(false);
+		expect(matchesRule({ files: ['test'] }, f('test'), policy.shipped)).toBe(true);
+		expect(matchesRule({ files: ['test'] }, f('source'), policy.shipped)).toBe(false);
+		expect(matchesRule({ files: ['shipped', 'vignette'] }, f('vignette'), policy.shipped)).toBe(true);
+	});
+
+	test('a policy without shipped ships every role', () => {
+		expect(parsePolicy(text.replace(/^shipped:.*$/m, ''), 'p.yaml', '').shipped).toEqual([...FileRoles]);
+	});
+
+	test('the grid keeps rules that name their files', () => {
+		const forbid: ForbidRule[] = [{ capabilities: ['shell'], files: ['test'], reason: 'r' }];
+		const t = policy.tiers[0];
+		const scoped = parsePolicy(text.replace(/^tiers:/m, `tiers:\n  - name: t\n    color: '#000000'\n    review: ''\n    forbid: [{ capabilities: [shell], files: [test] }]`), 'p.yaml', '');
+		expect(scoped.tiers[0].forbid[0].files).toEqual(['test']);
+		expect(t.forbid.every(r => r.files === undefined)).toBe(true);
+		expect(forbid[0].files).toEqual(['test']);
+	});
+
+	test.each(['shipped: [tests]', 'allow: [\'(\']'])('rejects %s', line => {
+		expect(() => parsePolicy(text.replace(/^(shipped|allow):.*$/m, '').concat(`\n${line}\n`), 'p.yaml', '')).toThrow();
 	});
 });

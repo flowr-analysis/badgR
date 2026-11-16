@@ -46,6 +46,29 @@ describe('flowR analysis of the fixtures', () => {
 		expect(threads.tier).toEqual(here.tier);
 	}, 120_000);
 
+	test('flowR\'s file roles split the findings, and only the shipped ones decide the tier', async() => {
+		const r = await analyze(fixture('roles'), policy);
+		expect(r.findings.map(f => [f.call, f.role, f.origins])).toEqual(expect.arrayContaining([
+			[expect.stringMatching(/system$/), 'source', ['author']],
+			[expect.stringMatching(/system$/), 'test', expect.arrayContaining(['outside'])]
+		]));
+		/* the user value in the test would give none, the constant in R/ gives silver */
+		expect(r.tier.tier).toBe('silver');
+		const all = await analyze(fixture('roles'), { ...policy, shipped: ['source', 'test'] });
+		expect(all.tier.tier).toBe('none');
+	}, 120_000);
+
+	test('allowed calls never become findings', async() => {
+		const r = await analyze(fixture('roles'), { ...policy, allow: ['system$'] });
+		expect(r.findings.filter(f => f.call.endsWith('system'))).toEqual([]);
+	}, 120_000);
+
+	test('the policy\'s time limit stops the whole analysis', async() => {
+		const r = await analyze(fixture('gold'), { ...policy, timeout: 0.001 });
+		expect(r.analyzed).toBe(false);
+		expect(r.error).toMatch(/timeout/);
+	}, 120_000);
+
 	test('a folder without R files gets no tier', async() => {
 		const r = await analyze(path.join(__dirname, '..', 'policies'), policy);
 		expect(r.analyzed).toBe(false);

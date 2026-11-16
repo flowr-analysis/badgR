@@ -6,7 +6,7 @@
  * comments.
  */
 import { parseDocument, isSeq, isMap, type Document } from 'yaml';
-import { NoOrigin, parsePolicy, type ForbidRule, type Policy } from '../src/policy-core';
+import { FileRoles, NoOrigin, parsePolicy, type ForbidRule, type Policy } from '../src/policy-core';
 import type { PolicyVocabulary } from './protocol';
 
 type Via = 'direct' | 'package' | 'any';
@@ -214,12 +214,8 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	const ruleDocs = (r: string) => vocabulary?.lintRules.find(x => x.name === r);
 
 	const legend = el('p', 'hint legend');
-	legend.append('Click a cell to step through ');
-	for(const s of ['none', 'direct', 'package', 'any']) {
-		legend.append(el('span', `cell-key v-${s}`, Label[s]), ` ${Title[s]}, `);
-	}
-	legend.append('and shift-click or right-click to step back. Origins come from flowR\'s ', link(Docs.inputSources, 'input-sources query'),
-		', calls inside packages from its ', link(Docs.sigdb, 'signature database'), '.');
+	const key = (s: string) => el('span', `cell-key v-${s}`, Label[s]);
+	legend.append('Click cycles ', key('none'), ' allowed; forbidden ', key('direct'), ' in the app, ', key('package'), ' in packages, ', key('any'), ' everywhere (right-click: back). Origins: ', link(Docs.inputSources, 'input sources'), ', packages: ', link(Docs.sigdb, 'signature database'), '.');
 
 	const tiers = policy.tiers.map((t, ti) => {
 		const box = el('details', 'vtier');
@@ -235,8 +231,11 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		head.append(color, el('strong', '', t.name), el('span', 'hint', t.summary ?? ''));
 		box.append(head);
 
-		const grid = gridOf(t.forbid, shape);
-		const write = () => edit(d => d.setIn(['tiers', ti, 'forbid'], flowed(d, rulesOf(grid, shape, t.forbid))));
+		/* the grid shows the rules of the shipped files; rules naming their own files stay as written */
+		const own = t.forbid.filter(r => r.files === undefined);
+		const scoped = t.forbid.filter(r => r.files !== undefined);
+		const grid = gridOf(own, shape);
+		const write = () => edit(d => d.setIn(['tiers', ti, 'forbid'], flowed(d, [...rulesOf(grid, shape, own), ...scoped])));
 		const wrap = el('div', 'table-wrap');
 		const table = el('table', 'vgrid');
 		const colgroup = el('colgroup');
@@ -292,6 +291,9 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		table.append(colgroup, thead, tbody);
 		wrap.append(table);
 		box.append(wrap);
+		if(scoped.length > 0) {
+			box.append(el('p', 'hint', `Also ${scoped.length} rule${scoped.length > 1 ? 's' : ''} for other files (${[...new Set(scoped.flatMap(r => r.files ?? []))].join(', ')}), edit in YAML.`));
+		}
 
 		const lint = el('div', 'vrow');
 		lint.append(el('span', 'vlabel', 'Linting rules'));
@@ -316,14 +318,14 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	/* ---------------------------------------------------------------- the whole policy */
 	const settings = el('details', 'vsettings');
 	settings.open = settingsOpen;
-	settings.append(el('summary', '', 'Settings of the whole policy'));
+	settings.append(el('summary', '', 'Policy settings'));
 
 	/* origins: each flowR input type in one class */
 	const types = [...new Set([...vocabulary?.inputTypes ?? [], ...Object.values(policy.origins).flat()])];
 	const classOf = (ty: string) => Object.entries(policy.origins).find(([, v]) => v.includes(ty))?.[0];
 	const og = el('div', 'vblock');
 	const oh = el('h4');
-	oh.append('Origins ', el('span', 'hint', 'which flowR input type counts as which origin, from the '), link(Docs.inputSources, 'input-sources query'));
+	oh.append('Origins ', el('span', 'hint', 'per flowR '), link(Docs.inputSources, 'input type'));
 	og.append(oh);
 	const ot = el('div', 'vtypes');
 	for(const ty of types) {
@@ -351,13 +353,13 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	fsel.append(...Object.keys(policy.origins).map(o => option(o)));
 	fsel.value = policy.fallbackOrigin;
 	fsel.addEventListener('change', () => edit(d => d.set('fallbackOrigin', fsel.value)));
-	fb.append(fsel, el('span', 'hint', 'for input types no origin lists'));
+	fb.append(fsel, el('span', 'hint', 'for unlisted input types'));
 	og.append(fb);
 
 	/* capabilities: class and flowR tags */
 	const cg = el('div', 'vblock');
 	const ch = el('h4');
-	ch.append('Capabilities ', el('span', 'hint', 'their sink class, and the flowR semantic tags that give a function the capability, see the '), link(Docs.functionInfo, 'function-info query'));
+	ch.append('Capabilities ', el('span', 'hint', 'sink class and flowR '), link(Docs.functionInfo, 'tags'));
 	cg.append(ch);
 	const classes = [...new Set(['severe', 'outward', 'other', ...shape.classes])];
 	for(const [name, spec] of Object.entries(policy.capabilities)) {
@@ -380,7 +382,7 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	/* trusted functions and extra linting rules */
 	const tg = el('div', 'vblock');
 	const th = el('h4');
-	th.append('Trusted ', el('span', 'hint', 'package functions whose sinks inside the package do not count, as regular expressions on pkg::fn'));
+	th.append('Trusted ', el('span', 'hint', 'regexes on pkg::fn; their package-internal sinks do not count'));
 	tg.append(th);
 	const trow = el('div', 'vrow');
 	trow.append(...chips(policy.trusted, 'regex-chip', () => undefined, () => undefined,
@@ -396,9 +398,43 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	trow.append(add);
 	tg.append(trow);
 
+	/* which files ship, from flowR's file roles */
+	const sg = el('div', 'vblock');
+	const sh = el('h4');
+	sh.append('Shipped files ', el('span', 'hint', 'tiers count findings in these flowR file roles only'));
+	sg.append(sh);
+	const srow = el('div', 'vrow');
+	for(const role of FileRoles) {
+		const b = el('button', 'chip', role);
+		b.type = 'button';
+		b.setAttribute('aria-pressed', String(policy.shipped.includes(role)));
+		b.addEventListener('click', () => edit(d => d.set('shipped', flowed(d, policy.shipped.includes(role) ? policy.shipped.filter(x => x !== role) : FileRoles.filter(x => x === role || policy.shipped.includes(x))))));
+		srow.append(b);
+	}
+	sg.append(srow);
+
+	/* calls that never become findings */
+	const ag = el('div', 'vblock');
+	const ah = el('h4');
+	ah.append('Allowed calls ', el('span', 'hint', 'regexes on pkg::fn, never findings; use sparingly'));
+	ag.append(ah);
+	const arow = el('div', 'vrow');
+	arow.append(...chips(policy.allow, 'regex-chip', () => undefined, () => undefined,
+		x => edit(d => d.set('allow', flowed(d, policy.allow.filter(y => y !== x))))));
+	const addAllow = el('input');
+	addAllow.placeholder = '^pkg::fn$ and Enter';
+	addAllow.addEventListener('keydown', ev => {
+		if(ev.key === 'Enter' && addAllow.value.trim()) {
+			const v = addAllow.value.trim();
+			edit(d => d.set('allow', flowed(d, [...policy.allow, v])));
+		}
+	});
+	arow.append(addAllow);
+	ag.append(arow);
+
 	const rg = el('div', 'vblock');
 	const rh = el('h4');
-	rh.append('Reported ', el('span', 'hint', 'flowR linting rules that run and show in the report without deciding a tier, see the '), link(Docs.linter, 'linter query'));
+	rh.append('Reported ', el('span', 'hint', 'extra '), link(Docs.linter, 'linting rules'), el('span', 'hint', ', no effect on the tier'));
 	rg.append(rh);
 	const rrow = el('div', 'vrow');
 	rrow.append(...chips(policy.report, 'rule-chip', r => ruleDocs(r)?.docs ?? Docs.linter, r => ruleDocs(r)?.about,
@@ -406,26 +442,41 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	rrow.append(picker('+ rule', (vocabulary?.lintRules ?? []).filter(r => !policy.report.includes(r.name)).map(r => ({ value: r.name, title: r.about })),
 		v => edit(d => d.set('report', flowed(d, [...policy.report, v])))));
 	rg.append(rrow);
-	/* the time limit of each linting rule */
-	const lt = el('label', 'vrow');
-	lt.append(el('span', 'vlabel', 'Time limit per rule'));
-	const secs = el('input');
-	secs.type = 'number';
-	secs.min = '1';
-	secs.step = '1';
-	secs.value = String(policy.lintTimeout);
-	secs.className = 'vnumber';
-	secs.addEventListener('change', () => {
-		const v = Number(secs.value);
-		if(Number.isFinite(v) && v > 0) {
-			edit(d => d.set('lintTimeout', v));
-		} else {
-			secs.value = String(policy.lintTimeout);
-		}
-	});
-	lt.append(secs, el('span', 'hint', 'seconds (lintTimeout). A rule that takes longer is stopped and reported as stopped.'));
-	rg.append(lt);
+	/* time limits */
+	const lg = el('div', 'vblock');
+	const lh = el('h4');
+	lh.append('Time limits ', el('span', 'hint', 'seconds'));
+	lg.append(lh);
+	const limits: readonly { key: 'lintTimeout' | 'lintReadTimeout' | 'timeout', label: string, hint: string, value: number | undefined }[] = [
+		{ key: 'lintTimeout', label: 'Per linting rule', hint: 'stopped after, counts as not run', value: policy.lintTimeout },
+		{ key: 'lintReadTimeout', label: 'Reading the code', hint: 'per linting worker', value: policy.lintReadTimeout },
+		{ key: 'timeout', label: 'Whole analysis', hint: 'empty: no limit; then the fallback tier', value: policy.timeout }
+	];
+	for(const l of limits) {
+		const row = el('label', 'vrow');
+		row.append(el('span', 'vlabel', l.label));
+		const secs = el('input');
+		secs.type = 'number';
+		secs.min = '1';
+		secs.step = '1';
+		secs.value = l.value === undefined ? '' : String(l.value);
+		secs.placeholder = 'none';
+		secs.className = 'vnumber';
+		secs.title = l.key;
+		secs.addEventListener('change', () => {
+			const v = Number(secs.value);
+			if(secs.value.trim() === '' && l.key === 'timeout') {
+				edit(d => d.delete('timeout'));
+			} else if(secs.value.trim() !== '' && Number.isFinite(v) && v > 0) {
+				edit(d => d.set(l.key, v));
+			} else {
+				secs.value = l.value === undefined ? '' : String(l.value);
+			}
+		});
+		row.append(secs, el('span', 'hint', l.hint));
+		lg.append(row);
+	}
 
-	settings.append(og, cg, tg, rg);
+	settings.append(lg, sg, og, cg, tg, ag, rg);
 	root.replaceChildren(legend, ...tiers, settings);
 }

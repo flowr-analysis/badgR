@@ -19,8 +19,20 @@ export interface ForbidRule {
 	readonly capabilities?: readonly string[]
 	readonly origins?:      readonly string[]
 	readonly via?:          Via | 'any'
+	/** the file roles (see {@link FileRoles}) the rule applies to, `shipped` for the policy's shipped roles; default: shipped */
+	readonly files?:        readonly string[]
 	readonly reason?:       string
 }
+
+/**
+ * The roles flowR gives a file, as far as they hold R code: package and app sources, tests, vignettes,
+ * files installed verbatim (`inst/`), and startup files (`.Rprofile`). A file with several roles gets the
+ * first of this list it has, so a test below `R/` still counts as a test.
+ */
+export const FileRoles = ['test', 'vignette', 'install', 'startup', 'source'] as const;
+export type FileRoleName = typeof FileRoles[number];
+/** in a forbid rule's `files`, the roles the policy calls shipped */
+export const Shipped = 'shipped';
 
 export interface TierSpec {
 	readonly name:         string
@@ -41,9 +53,17 @@ export interface Policy {
 	readonly fallbackOrigin: string
 	readonly capabilities:   Readonly<Record<string, CapabilitySpec>>
 	readonly trusted:        readonly string[]
+	/** calls (regular expressions on pkg::fn or fn) that never become findings, whatever they can do */
+	readonly allow:          readonly string[]
+	/** the file roles that ship and run where the artifact is used; forbid rules apply to these unless they name others */
+	readonly shipped:        readonly FileRoleName[]
 	readonly report:         readonly string[]
 	/** how long one linting rule may run, in seconds; a rule that runs longer counts as not run. */
 	readonly lintTimeout:    number
+	/** how long a linting worker may take to read the code, in seconds; its rules count as not run after that. */
+	readonly lintReadTimeout: number
+	/** how long the whole analysis may run, in seconds; the artifact then gets the fallback tier. None: no limit. */
+	readonly timeout?:       number
 	readonly tiers:          readonly TierSpec[]
 	readonly fallbackTier:   { readonly name: string, readonly color: string, readonly review: string }
 	/** sha256 of the policy file, so a report names exactly the policy it was checked against */
@@ -156,6 +176,14 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 
 	const trusted = strings(file, 'trusted', raw.trusted);
 	checkRegexes(file, 'trusted', trusted);
+	const allow = strings(file, 'allow', raw.allow);
+	checkRegexes(file, 'allow', allow);
+	const shipped = raw.shipped === undefined ? [...FileRoles] : strings(file, 'shipped', raw.shipped);
+	for(const f of shipped) {
+		if(!(FileRoles as readonly string[]).includes(f)) {
+			fail(file, `shipped: unknown file role ${f}, use ${FileRoles.join(', ')}`);
+		}
+	}
 
 	const tiersRaw = raw.tiers;
 	if(!Array.isArray(tiersRaw) || tiersRaw.length === 0) {
@@ -174,10 +202,16 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 				capabilities: r?.capabilities === undefined ? undefined : strings(file, `${w}.capabilities`, r.capabilities),
 				origins:      r?.origins === undefined ? undefined : strings(file, `${w}.origins`, r.origins),
 				via:          r?.via === undefined ? 'any' : str(file, `${w}.via`, r.via) as ForbidRule['via'],
+				files:        r?.files === undefined ? undefined : strings(file, `${w}.files`, r.files),
 				reason:       r?.reason === undefined ? undefined : str(file, `${w}.reason`, r.reason)
 			};
 			if(!['direct', 'package', 'any'].includes(rule.via as string)) {
 				fail(file, `${w}.via must be direct, package, or any`);
+			}
+			for(const f of rule.files ?? []) {
+				if(f !== Shipped && !(FileRoles as readonly string[]).includes(f)) {
+					fail(file, `${w}.files: unknown file role ${f}, use ${FileRoles.join(', ')}, or ${Shipped}`);
+				}
 			}
 			for(const c of rule.classes ?? []) {
 				if(!classes.has(c)) {
@@ -224,8 +258,12 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 		fallbackOrigin,
 		capabilities,
 		trusted,
+		allow,
+		shipped:      shipped as FileRoleName[],
 		report:       strings(file, 'report', raw.report),
-		lintTimeout:  lintTimeoutOf(file, raw.lintTimeout),
+		lintTimeout:  secondsOf(file, 'lintTimeout', raw.lintTimeout, DefaultLintTimeout),
+		lintReadTimeout: secondsOf(file, 'lintReadTimeout', raw.lintReadTimeout, DefaultLintReadTimeout),
+		timeout:      raw.timeout === undefined || raw.timeout === null ? undefined : secondsOf(file, 'timeout', raw.timeout, 0),
 		tiers,
 		fallbackTier: {
 			name:   str(file, 'fallbackTier.name', fb.name, 'none'),
@@ -240,13 +278,19 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 /** the default of `lintTimeout`, in seconds */
 export const DefaultLintTimeout = 120;
 
-function lintTimeoutOf(file: string, v: unknown): number {
+/** the default of `lintReadTimeout`, in seconds */
+export const DefaultLintReadTimeout = 900;
+
+/** the time limits of the policy, in seconds */
+export const TimeLimitKeys = ['lintTimeout', 'lintReadTimeout', 'timeout'] as const;
+
+function secondsOf(file: string, key: string, v: unknown, fallback: number): number {
 	if(v === undefined) {
-		return DefaultLintTimeout;
+		return fallback;
 	}
 	/* setTimeout takes at most 2^31 - 1 ms, about 24 days */
 	if(typeof v !== 'number' || !(v > 0) || !Number.isFinite(v) || v * 1000 > 2 ** 31 - 1) {
-		fail(file, 'lintTimeout must be a positive number of seconds, at most 2147483');
+		fail(file, `${key} must be a positive number of seconds, at most 2147483`);
 	}
 	return v;
 }

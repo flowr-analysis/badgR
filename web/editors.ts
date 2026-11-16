@@ -55,14 +55,16 @@ export function rEditor(parent: HTMLElement, doc: string, onChange: (text: strin
 
 /* ---------------------------------------------------------------- policy completion */
 
-const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'report', 'lintTimeout', 'tiers', 'fallbackTier'];
+const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'allow', 'shipped', 'report', 'lintTimeout', 'lintReadTimeout', 'timeout', 'tiers', 'fallbackTier'];
 const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps'];
 const TierKeys = ['name', 'color', 'summary', 'review', 'description', 'forbid', 'lint'];
-const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'reason'];
+const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'files', 'reason'];
 const Docs: Record<string, string> = {
 	origins: 'who controls a value: origin classes of flowR input types', fallbackOrigin: 'the origin class of unlisted input types',
 	capabilities: 'what a call can do, grouped into sink classes', trusted: 'package functions whose internal sinks do not count',
-	report: 'extra flowR linting rules, reported only', tiers: 'strictest first; the first tier no rule blocks is assigned',
+	report: 'extra flowR linting rules, reported only', allow: 'calls that never become findings (regular expressions on pkg::fn)',
+	shipped: 'flowR file roles that ship: source, test, vignette, install, startup', files: 'file roles the rule applies to, or shipped (default)', lintTimeout: 'seconds one linting rule may run',
+	lintReadTimeout: 'seconds a linting worker may take to read the code', timeout: 'seconds the whole analysis may run; none: no limit', tiers: 'strictest first; the first tier no rule blocks is assigned',
 	class: 'the sink class of the capability', tags: 'flowR semantic call tags', callProps: 'flowR call properties',
 	functions: 'regular expressions; with :: matched against pkg::fn', exclude: 'regular expressions removing matches again',
 	unlessCallProps: 'a call with one of these properties does not count', unlessArgProps: 'a call with a parameter of these properties does not count',

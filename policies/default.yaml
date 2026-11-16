@@ -70,15 +70,31 @@ capabilities:
 trusted:
   - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule)$'
 
+# calls that never become findings, whatever they can do: regular expressions on
+# pkg::fn (or fn when flowR cannot qualify it). Use sparingly: an allowed call is not
+# looked at at all, unlike `trusted`, which only skips the sinks inside a package.
+allow: []
+
+# which files ship and run where the artifact is used, from flowR's file roles:
+# source (R/, app scripts), test (tests/), vignette (vignettes/), install (inst/),
+# startup (.Rprofile). Forbid rules apply to the shipped files unless they give
+# `files:` (role names or `shipped`); findings elsewhere are only reported.
+shipped: [source, install, startup]
+
 # extra flowR linting rules, reported only
 report:
   - call-contracts
   - unescaped-arguments
   - network-functions
 
-# seconds one linting rule may run; a rule that takes longer is stopped and counts
-# as not run, so no tier that needs it is reached
+# time limits, in seconds
+# lintTimeout: one linting rule; a rule that takes longer is stopped and counts as
+#   not run, so no tier that needs it is reached
+# lintReadTimeout: a linting worker reading the code; after that, its rules count as not run
+# timeout: the whole analysis (leave out for no limit); the artifact then gets the
+#   fallback tier. The --timeout option of the CLI overrides it.
 lintTimeout: 120
+lintReadTimeout: 900
 
 # strictest first
 tiers:

@@ -83,8 +83,8 @@ capabilities: { shell: { class: severe, functions: ['^system$'] } }
 	test('the origin none matches findings without any traced value, and only those', () => {
 		const rule = { classes: ['severe'], origins: ['none'] };
 		const f = (origins: string[]) => ({ id: '1', call: 'base::system', capability: 'shell', class: 'severe', via: 'direct' as const, origins, inputTypes: [] });
-		expect(matchesRule(rule, f([]))).toBe(true);
-		expect(matchesRule(rule, f(['author']))).toBe(false);
-		expect(matchesRule({ ...rule, origins: ['none', 'outside'] }, f(['outside']))).toBe(true);
+		expect(matchesRule(rule, f([]), ['source'])).toBe(true);
+		expect(matchesRule(rule, f(['author']), ['source'])).toBe(false);
+		expect(matchesRule({ ...rule, origins: ['none', 'outside'] }, f(['outside']), ['source'])).toBe(true);
 	});
 });

@@ -1,9 +1,11 @@
-import { NoOrigin, type ForbidRule, type Policy, type Via } from './policy-core';
+import { NoOrigin, Shipped, type FileRoleName, type ForbidRule, type Policy, type Via } from './policy-core';
 
 /** one call that reaches a capability */
 export interface Finding {
 	readonly id:          string
 	readonly file?:       string
+	/** what the file is for, from flowR's file roles; reports from before the roles have none, which counts as source */
+	readonly role?:       FileRoleName
 	/** `[startLine, startColumn, endLine, endColumn]` */
 	readonly loc?:        readonly [number, number, number, number]
 	/** the called function, `pkg::fn` when flowR could qualify it */
@@ -70,7 +72,15 @@ export interface TierResult {
 	readonly checks: readonly TierCheck[]
 }
 
-export function matchesRule(rule: ForbidRule, f: Finding): boolean {
+/** the file roles a rule applies to */
+export function rolesOf(rule: ForbidRule, shipped: readonly FileRoleName[]): readonly string[] {
+	return (rule.files ?? [Shipped]).flatMap((r): readonly string[] => r === Shipped ? shipped : [r]);
+}
+
+export function matchesRule(rule: ForbidRule, f: Finding, shipped: readonly FileRoleName[]): boolean {
+	if(!rolesOf(rule, shipped).includes(f.role ?? 'source')) {
+		return false;
+	}
 	if(rule.classes !== undefined && !rule.classes.includes(f.class)) {
 		return false;
 	}
@@ -91,7 +101,8 @@ function describeRule(rule: ForbidRule): string {
 		rule.classes ? `class ${rule.classes.join('|')}` : undefined,
 		rule.capabilities ? `capability ${rule.capabilities.join('|')}` : undefined,
 		rule.origins ? `origin ${rule.origins.join('|')}` : 'any origin',
-		rule.via && rule.via !== 'any' ? `via ${rule.via}` : undefined
+		rule.via && rule.via !== 'any' ? `via ${rule.via}` : undefined,
+		rule.files ? `files ${rule.files.join('|')}` : undefined
 	];
 	return parts.filter(p => p !== undefined).join(', ');
 }
@@ -105,7 +116,7 @@ export function assignTier(policy: Policy, findings: readonly Finding[], lint: r
 	const checks: TierCheck[] = policy.tiers.map(t => {
 		const violations: Violation[] = [];
 		t.forbid.forEach((rule, i) => {
-			const hit = findings.filter(f => matchesRule(rule, f));
+			const hit = findings.filter(f => matchesRule(rule, f, policy.shipped));
 			if(hit.length > 0) {
 				violations.push({ rule: `${t.name}.forbid[${i}] (${describeRule(rule)})`, reason: rule.reason ?? describeRule(rule), findings: hit.map(f => f.id) });
 			}

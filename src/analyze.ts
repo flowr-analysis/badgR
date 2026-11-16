@@ -50,7 +50,7 @@ export function collectFiles(target: string): string[] {
 }
 
 export interface AnalyzeOptions {
-	/** stop the analysis after this many milliseconds, the artifact then gets the fallback tier */
+	/** stop the analysis after this many milliseconds, the artifact then gets the fallback tier; overrides `timeout` of the policy */
 	readonly timeoutMs?: number
 	readonly verbose?:   boolean
 	readonly progress?:  ProgressListener
@@ -86,16 +86,17 @@ export async function analyze(target: string, policy: Policy, opts: AnalyzeOptio
 			throw new Error('no R files found');
 		}
 		const analyzer = await diskAnalyzer(files, sig.dir);
-		lint = opts.lintInThread ? undefined : lintThreads(files, sig.dir, policy.lintTimeout);
+		lint = opts.lintInThread ? undefined : lintThreads(files, sig.dir, policy.lintTimeout, policy.lintReadTimeout);
 		const db = () => analyzer.inspectContext().deps.signatures();
 		const work = analyzeWith(analyzer, policy, (pkg, fn) => {
 			const version = db().versionOf(pkg);
 			return version === undefined ? undefined : db().sources().transitiveCallees(pkg, fn, version);
 		}, progress, undefined, lint?.runner);
-		const result = opts.timeoutMs === undefined ? await work : await Promise.race([
+		const timeoutMs = opts.timeoutMs ?? (policy.timeout === undefined ? undefined : policy.timeout * 1000);
+		const result = timeoutMs === undefined ? await work : await Promise.race([
 			work,
 			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error(`timeout after ${opts.timeoutMs} ms`)), opts.timeoutMs);
+				timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs} ms`)), timeoutMs);
 				timer.unref();
 			})
 		]);
@@ -127,7 +128,7 @@ export async function diskAnalyzer(files: readonly string[], sigDir: string | un
 }
 
 /** the linting rules in threads of their own, see {@link lintInWorkers}; the thread runs `lint-thread` */
-function lintThreads(files: readonly string[], sigDir: string | undefined, limitSeconds: number): ReturnType<typeof lintInWorkers> {
+function lintThreads(files: readonly string[], sigDir: string | undefined, limitSeconds: number, readSeconds: number): ReturnType<typeof lintInWorkers> {
 	/* run from the sources with tsx, the thread needs tsx too */
 	const ts = __filename.endsWith('.ts');
 	const script = path.join(__dirname, ts ? 'lint-thread.ts' : 'lint-thread.js');
@@ -145,5 +146,5 @@ function lintThreads(files: readonly string[], sigDir: string | undefined, limit
 			run:       rule => w.postMessage(rule),
 			terminate: () => void w.terminate()
 		};
-	}, limitSeconds);
+	}, limitSeconds, readSeconds);
 }

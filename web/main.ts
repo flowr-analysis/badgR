@@ -3,7 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import { badgeSvg } from '../src/badge';
 import type { FlowrQueryRecord, Progress, Report } from '../src/core';
 import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
-import { type Policy, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
+import { type FileRoleName, type Policy, FileRoles, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
 import { markdownReport } from '../src/report';
 import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
 import type { PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
@@ -322,7 +322,7 @@ function showProgress(label: string): ProgressBox {
 		const span = el('span', i === 0 ? 'step active' : 'step');
 		const time = el('span', 'step-time');
 		span.append(el('span', 'step-name', name), time);
-		return { span, time, from: i === 0 ? started : undefined as number | undefined };
+		return { span, time, from: i === 0 ? started : undefined as number | undefined, eta: undefined as { ms: number, at: number } | undefined };
 	});
 	$('steps').replaceChildren(...steps.map(s => s.span));
 	fill.className = 'indeterminate';
@@ -359,7 +359,10 @@ function showProgress(label: string): ProgressBox {
 	const paint = () => {
 		const now = performance.now();
 		const from = steps[at].from;
-		steps[at].time.textContent = from === undefined ? '' : duration(now - from);
+		/* the step's own time left, next to its time so far */
+		const own = steps[at].eta;
+		const rest = own === undefined ? undefined : own.ms - (now - own.at);
+		steps[at].time.textContent = from === undefined ? '' : `${duration(now - from)}${rest === undefined ? '' : rest > 0 ? ` · ~${duration(Math.max(1000, Math.ceil(rest / 1000) * 1000))} left` : ' · over estimate'}`;
 		clock.textContent = `${duration(now - started)} · ${left(now)}`;
 		if(text.textContent !== message) {
 			text.textContent = message;
@@ -403,6 +406,14 @@ function showProgress(label: string): ProgressBox {
 			at = i;
 		}
 		message = p.message;
+		/* the step's time left: as the analysis estimates it, else from how fast its count goes */
+		const step = steps[at];
+		const now = performance.now();
+		if(p.phaseEtaMs !== undefined) {
+			step.eta = { ms: p.phaseEtaMs, at: now };
+		} else if(p.total && p.done && step.from !== undefined && p.done < p.total) {
+			step.eta = { ms: (now - step.from) / p.done * (p.total - p.done), at: now };
+		}
 		if(p.total) {
 			const done = Math.min(p.done ?? 0, p.total);
 			fill.className = '';
@@ -637,7 +648,7 @@ function retier(): void {
 	} catch{
 		return;
 	}
-	const core = (p: Policy) => JSON.stringify([p.origins, p.fallbackOrigin, p.capabilities, p.trusted]);
+	const core = (p: Policy) => JSON.stringify([p.origins, p.fallbackOrigin, p.capabilities, p.trusted, p.allow]);
 	const ran = new Set(last.report.lint.map(l => l.rule));
 	if(core(old) !== core(policy) || !lintRulesOf(policy).every(r => ran.has(r))) {
 		$('result').classList.add('stale');
@@ -907,6 +918,13 @@ const OriginLong: Record<string, string> = {
 	outside: 'values from users, files, or the network',
 	none: 'calls without any traced value'
 };
+/* flowR's file roles, in the words of the page */
+const RoleWord: Record<FileRoleName, string> = { source: 'main', test: 'tests', vignette: 'vignettes', install: 'inst/', startup: 'startup' };
+const RoleLong: Record<FileRoleName, string> = {
+	source: 'the main sources, such as R/ of a package or the scripts of an app', test: 'tests, such as tests/testthat',
+	vignette: 'vignettes', install: 'files installed verbatim, from inst/', startup: 'startup files such as .Rprofile'
+};
+const roleOfFinding = (f: Finding): FileRoleName => f.role ?? 'source';
 const cw = (c: string) => ClassWords[c] ?? c;
 const ow = (o: string) => OriginWords[o] ?? o;
 
@@ -1166,11 +1184,12 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	}
 	fact('left to review', r.tier.review === 'full' ? 'All findings.' : sentence(r.tier.review) + '.');
 	if(r.unresolvedPackages.length > 0) {
-		fact('no data', `${listing(r.unresolvedPackages)}. badgR did not look inside ${r.unresolvedPackages.length > 1 ? 'these packages' : 'this package'}.`);
+		fact('not looked into', `${listing(r.unresolvedPackages)}: no signature data, so calls inside ${r.unresolvedPackages.length > 1 ? 'these packages' : 'this package'} are not checked.`);
 	}
 	summary.append(facts);
 
 	if(r.findings.length > 0) {
+		summary.append(el('p', 'top-label', 'most telling findings'));
 		const top = el('ul', 'top');
 		/* the three most telling kinds of finding, each once, with how many more are like it */
 		const kinds = new Map<string, Finding[]>();
@@ -1349,17 +1368,17 @@ function renderFindings(r: Report): void {
 		th.append(link(Docs.inputSources, ow(o), `${sentence(OriginLong[o] ?? o)}, found with flowR's input-sources query`));
 		return th;
 	}));
-	const rows = allClasses.map(c => {
-		const tr = el('tr');
-		const th = el('th', '', cw(c));
-		th.title = policy ? `capabilities of class ${c}: ${listing(Object.entries(policy.capabilities).filter(([, v]) => v.class === c).map(([k, v]) => `${k} (${v.description ?? ''})`))}` : '';
-		tr.append(th);
+	/* per class, a row of all its findings and, when the code has files of several roles, a row per role */
+	const roles = FileRoles.filter(x => r.findings.some(f => roleOfFinding(f) === x));
+	const cellRow = (c: string, label: HTMLElement, fs: readonly Finding[], cls = '') => {
+		const tr = el('tr', cls);
+		tr.append(label);
 		for(const o of allOrigins) {
-			const n = r.findings.filter(f => f.class === c && f.origins.includes(o)).length;
+			const calls = fs.filter(f => f.class === c && f.origins.includes(o));
+			const n = calls.length;
 			const td = el('td', 'n');
 			const span = el('span', n ? (o === 'outside' ? 'hot' : 'warm') : 'zero', n ? String(n) : '·');
-			const calls = r.findings.filter(f => f.class === c && f.origins.includes(o));
-			span.title = n ? `${listing([...new Set(calls.map(f => `${f.call} (${where(f)})`))])} ${n === 1 ? 'gets' : 'get'} ${OriginLong[o] ?? o}` : `no ${cw(c)} call gets ${OriginLong[o] ?? o}`;
+			span.title = n ? `${listing([...new Set(calls.slice(0, 12).map(f => `${f.call} (${where(f)})`))])}${n > 12 ? ', …' : ''} ${n === 1 ? 'gets' : 'get'} ${OriginLong[o] ?? o}` : `no ${cw(c)} call gets ${OriginLong[o] ?? o}`;
 			if(n) {
 				span.style.opacity = String(0.55 + 0.45 * n / max);
 				span.classList.add('clickable');
@@ -1369,6 +1388,20 @@ function renderFindings(r: Report): void {
 			tr.append(td);
 		}
 		return tr;
+	};
+	const rows = allClasses.flatMap(c => {
+		const th = el('th', '', cw(c));
+		th.title = policy ? `capabilities of class ${c}: ${listing(Object.entries(policy.capabilities).filter(([, v]) => v.class === c).map(([k, v]) => `${k} (${v.description ?? ''})`))}` : '';
+		const out = [cellRow(c, th, r.findings)];
+		if(roles.length > 1) {
+			for(const role of roles.filter(x => r.findings.some(f => f.class === c && roleOfFinding(f) === x))) {
+				const shipped = policy?.shipped.includes(role) ?? true;
+				const rth = el('th', 'm-role', RoleWord[role]);
+				rth.title = `${RoleLong[role]}, from flowR's file roles; ${shipped ? 'shipped: the tiers count it' : 'not shipped: the tiers do not count it unless a rule names it'}`;
+				out.push(cellRow(c, rth, r.findings.filter(f => roleOfFinding(f) === role), `role-row${shipped ? '' : ' unshipped'}`));
+			}
+		}
+		return out;
 	});
 	matrix.replaceChildren(el('thead'), el('tbody'));
 	matrix.firstElementChild?.append(head);
@@ -1381,20 +1414,21 @@ function renderFindings(r: Report): void {
 	const active = view.active;
 	const matches = (f: Finding) => [...active].every(a => {
 		const [kind, value] = a.split(':');
-		return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : f.origins.includes(value);
+		return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : kind === 'role' ? roleOfFinding(f) === value : f.origins.includes(value);
 	});
 	let shown = r.findings.filter(matches);
 	const filters = $('filters');
 	filters.replaceChildren();
 	const origins = [...new Set(r.findings.flatMap(f => f.origins))];
-	const keys = [...new Set(r.findings.map(f => `class:${f.class}`)), ...new Set(r.findings.map(f => `via:${f.via}`)), ...origins.map(o => `origin:${o}`), 'review:unreviewed'];
+	const roleKeys = FileRoles.filter(x => r.findings.some(f => roleOfFinding(f) === x)).map(x => `role:${x}`);
+	const keys = [...roleKeys.length > 1 ? roleKeys : [], ...new Set(r.findings.map(f => `class:${f.class}`)), ...new Set(r.findings.map(f => `via:${f.via}`)), ...origins.map(o => `origin:${o}`), 'review:unreviewed'];
 	for(const k of [...active].filter(k => !keys.includes(k))) {
 		active.delete(k);
 	}
 	shown = r.findings.filter(matches);
 	for(const k of keys) {
 		const [kind, value] = k.split(':');
-		const b = el('button', 'chip', kind === 'class' ? `${cw(value)} calls` : kind === 'via' ? (value === 'package' ? 'inside packages' : 'in the app') : kind === 'review' ? 'not reviewed yet' : `values from ${ow(value)}`);
+		const b = el('button', 'chip', kind === 'class' ? `${cw(value)} calls` : kind === 'via' ? (value === 'package' ? 'inside packages' : 'in the app') : kind === 'review' ? 'not reviewed yet' : kind === 'role' ? `in ${RoleWord[value as FileRoleName]}` : `values from ${ow(value)}`);
 		b.type = 'button';
 		b.dataset.key = k;
 		b.setAttribute('aria-pressed', String(active.has(k)));
@@ -1448,7 +1482,13 @@ function renderFindings(r: Report): void {
 		call.title = `${f.call} ${describe(f)}`;
 		const rv = el('td', 'rv-cell');
 		rv.append(reviewPicker(f, true));
-		tr.append(el('td', 'mono', where(f)), call, cap, via, orig, rv);
+		const at = el('td', 'mono', where(f));
+		if(roleOfFinding(f) !== 'source') {
+			const tag = el('span', `tag role${policy?.shipped.includes(roleOfFinding(f)) === false ? ' unshipped' : ''}`, RoleWord[roleOfFinding(f)]);
+			tag.title = RoleLong[roleOfFinding(f)];
+			at.append(' ', tag);
+		}
+		tr.append(at, call, cap, via, orig, rv);
 		tr.classList.toggle('reviewed', reviewOf(f) !== undefined);
 		tr.addEventListener('click', ev => {
 			if(!(ev.target as Element).closest('.rv-cell')) {
@@ -1462,8 +1502,10 @@ function renderFindings(r: Report): void {
 		$('finding-count').textContent = r.findings.length > 0 ? `${shown.length} of ${r.findings.length}` : '';
 		grouping.hidden = r.findings.length < 3;
 		groupButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(['capability', 'call', 'file', 'none'][i] === groupBy)));
+		/* nothing to filter, group, or review: the summary already says there are no risky calls */
+		$('findings-block').hidden = r.findings.length === 0;
 		if(r.findings.length === 0) {
-			table.replaceChildren(el('caption', 'hint', 'none'));
+			table.replaceChildren();
 			return;
 		}
 		const h = el('tr');
