@@ -30,9 +30,11 @@ describe('what the page reads', () => {
 			'proj/app.R': strToU8('system("ls")'),
 			'proj/README.md': strToU8('# hi'),
 			'proj/renv/library/x.R': strToU8('eval(1)'),
+			'proj/rv/library/4.6/x/R/y.R': strToU8('eval(1)'),
+			'proj/rv/scripts/activate.R': strToU8('x <- 1'),
 			'proj/DESCRIPTION': strToU8('Package: p\nImports: glue')
 		});
-		expect(fromZip(zip).map(f => f.path).sort()).toEqual(['DESCRIPTION', 'app.R']);
+		expect(fromZip(zip).map(f => f.path).sort()).toEqual(['DESCRIPTION', 'app.R', 'rv/scripts/activate.R']);
 	});
 
 	test('finds the packages a project names', () => {

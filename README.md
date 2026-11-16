@@ -16,6 +16,11 @@ commands, files, the network) and where their values come from.
 The tiers follow *A Threat Model for R / Shiny Applications*. `policies/default.yaml` defines them;
 pass your own with `--policy`.
 
+flowR's linting rules run next to the rest of the analysis, each with a time limit (`lintTimeout`
+in the policy, 120 seconds by default). A rule that takes longer is stopped and counts as not run,
+so no tier that needs it is reached. (A browser without nested web workers runs the rules one after
+the other, without the limit.)
+
 Playground: <https://flowr-analysis.github.io/badgR/> (runs in the browser, your code stays local)
 
 ## Usage

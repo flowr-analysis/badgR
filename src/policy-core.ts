@@ -42,6 +42,8 @@ export interface Policy {
 	readonly capabilities:   Readonly<Record<string, CapabilitySpec>>
 	readonly trusted:        readonly string[]
 	readonly report:         readonly string[]
+	/** how long one linting rule may run, in seconds; a rule that runs longer counts as not run. */
+	readonly lintTimeout:    number
 	readonly tiers:          readonly TierSpec[]
 	readonly fallbackTier:   { readonly name: string, readonly color: string, readonly review: string }
 	/** sha256 of the policy file, so a report names exactly the policy it was checked against */
@@ -223,6 +225,7 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 		capabilities,
 		trusted,
 		report:       strings(file, 'report', raw.report),
+		lintTimeout:  lintTimeoutOf(file, raw.lintTimeout),
 		tiers,
 		fallbackTier: {
 			name:   str(file, 'fallbackTier.name', fb.name, 'none'),
@@ -232,6 +235,20 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 		hash,
 		source: file
 	};
+}
+
+/** the default of `lintTimeout`, in seconds */
+export const DefaultLintTimeout = 120;
+
+function lintTimeoutOf(file: string, v: unknown): number {
+	if(v === undefined) {
+		return DefaultLintTimeout;
+	}
+	/* setTimeout takes at most 2^31 - 1 ms, about 24 days */
+	if(typeof v !== 'number' || !(v > 0) || !Number.isFinite(v) || v * 1000 > 2 ** 31 - 1) {
+		fail(file, 'lintTimeout must be a positive number of seconds, at most 2147483');
+	}
+	return v;
 }
 
 /** every flowR linting rule the policy runs, for its tiers and for the report */

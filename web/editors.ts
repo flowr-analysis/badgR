@@ -55,7 +55,7 @@ export function rEditor(parent: HTMLElement, doc: string, onChange: (text: strin
 
 /* ---------------------------------------------------------------- policy completion */
 
-const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'report', 'tiers', 'fallbackTier'];
+const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'report', 'lintTimeout', 'tiers', 'fallbackTier'];
 const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps'];
 const TierKeys = ['name', 'color', 'summary', 'review', 'description', 'forbid', 'lint'];
 const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'reason'];

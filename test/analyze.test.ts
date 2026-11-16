@@ -34,6 +34,18 @@ describe('flowR analysis of the fixtures', () => {
 		expect(r.findings).toEqual([]);
 	}, 120_000);
 
+	test('a linting rule over the time limit is stopped, and no tier that needs it is reached', async() => {
+		const r = await analyze(fixture('gold'), { ...policy, lintTimeout: 0.001 });
+		expect(r.tier.tier).not.toBe('gold');
+		expect(r.lint.map(l => l.error)).toEqual(r.lint.map(() => expect.stringMatching(/^stopped after 0.001 s/)));
+	}, 120_000);
+
+	test('the linting rules give the same results in their threads as in this one', async() => {
+		const [threads, here] = await Promise.all([analyze(fixture('none'), policy), analyze(fixture('none'), policy, { lintInThread: true })]);
+		expect(threads.lint).toEqual(here.lint);
+		expect(threads.tier).toEqual(here.tier);
+	}, 120_000);
+
 	test('a folder without R files gets no tier', async() => {
 		const r = await analyze(path.join(__dirname, '..', 'policies'), policy);
 		expect(r.analyzed).toBe(false);

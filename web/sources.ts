@@ -10,7 +10,7 @@ import type { SourceFile } from './protocol';
 /** what the analysis reads: R code, R Markdown, Quarto, and the package metadata */
 export const Wanted = /(\.(R|r|Rmd|rmd|qmd)$)|(^|\/)DESCRIPTION$/;
 /** skipped folders: package libraries and version control */
-const Skipped = /(^|\/)(\.git|renv|packrat|node_modules|\.Rproj\.user)\//;
+const Skipped = /(^|\/)(\.git|renv|packrat|node_modules|\.Rproj\.user|rv\/library)\//;
 export const MaxFiles = 2000;
 export const MaxBytes = 30 * 1024 * 1024;
 

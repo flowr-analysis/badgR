@@ -60,7 +60,8 @@ async function open(): Promise<Session> {
 }
 
 async function tierOf(page: Page): Promise<string> {
-	await page.waitForSelector('#result:not([hidden]), #error:not([hidden])', { timeout: 120_000 });
+	/* a partial report (`.partial`) shows while linting rules still run: its tier is final only once the analysis is done */
+	await page.waitForSelector('body:not(.busy) #result:not([hidden]):not(.partial), #error:not([hidden])', { timeout: 120_000 });
 	const error = await page.locator('#error:not([hidden])').count();
 	if(error > 0) {
 		throw new Error(await page.locator('#error').innerText());
@@ -214,6 +215,20 @@ describe('the playground', () => {
 		expect(errors).toEqual([]);
 		await page.close();
 	}, 60_000);
+
+	test('stops a linting rule over the time limit of the policy, and no tier that needs the rule is reached', async() => {
+		const page = await browser.newPage();
+		const errors: string[] = [];
+		page.on('pageerror', e => errors.push(e.message));
+		const policy = fs.readFileSync(path.join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8').replace(/^lintTimeout:.*$/m, 'lintTimeout: 0.001');
+		await page.addInitScript(text => localStorage.setItem('badgr.policy', text), policy);
+		await page.goto(origin + '/');
+		await page.setInputFiles('#file-input', path.join(fixtures, 'gold/app.R'));
+		expect(await tierOf(page)).not.toBe('gold');
+		expect(await page.locator('#lint', { hasText: 'took longer than' }).count()).toBe(1);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
 
 	test('groups many findings and keeps the report in place while it analyzes', async() => {
 		const { page, errors } = await open();

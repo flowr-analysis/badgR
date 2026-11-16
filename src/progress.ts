@@ -23,6 +23,7 @@ export class ProgressPrinter {
 	private index = 0;
 	private label = '';
 	private last: Progress | undefined;
+	private lastAt = Date.now();
 	private ticker: NodeJS.Timeout | undefined;
 	private readonly durations: number[] = [];
 
@@ -48,6 +49,7 @@ export class ProgressPrinter {
 		}
 		const changedStep = this.last?.phase !== p.phase;
 		this.last = p;
+		this.lastAt = Date.now();
 		if(this.quiet) {
 			return;
 		}
@@ -72,6 +74,11 @@ export class ProgressPrinter {
 	}
 
 	private eta(): string {
+		const p = this.last;
+		if(p?.etaMs !== undefined) {
+			const left = Math.max(0, p.etaMs - (Date.now() - this.lastAt));
+			return left > 0 ? `, about ${clock(left)} left` : ', taking longer than estimated';
+		}
 		if(this.durations.length === 0 || this.total <= 1) {
 			return '';
 		}

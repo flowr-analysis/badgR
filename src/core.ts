@@ -34,6 +34,8 @@ export interface Progress {
 	/** for steps that count, how far they are */
 	readonly done?:   number
 	readonly total?:  number
+	/** about how long the whole analysis still takes, from when this was sent, in milliseconds */
+	readonly etaMs?:  number
 }
 
 export type ProgressListener = (p: Progress) => void;
@@ -62,6 +64,8 @@ export interface Report {
 	readonly unresolvedPackages: readonly string[]
 	/** what badgR asked flowR, in order: the request as flowR takes it, how long it took, and how much came back */
 	readonly queries?:           readonly FlowrQueryRecord[]
+	/** set only on a report shown while the analysis still runs: the linting rules not done yet, in the order they run (the first is running); until they are done, the tier is provisional */
+	readonly pending?:           readonly string[]
 	readonly ms:            number
 }
 
@@ -168,11 +172,124 @@ export interface FlowrQueryRecord {
 	readonly result:  string
 }
 
+/**
+ * Runs linting rules somewhere they can be stopped, a rule over the time limit then counts as not run.
+ * It is started before the dataflow graph is built, so the rules run alongside the rest of the analysis.
+ * `started` is told when a rule starts, `done` when it ends; it resolves once all are done.
+ */
+export type LintRunner = (rules: readonly string[], started: (rule: string) => void, done: (r: { summary: LintSummary, query?: FlowrQueryRecord }) => void) => Promise<void>;
+
+/** what a linting worker answers: ready once it has read the code, then one result per rule it is sent */
+export type LintMessage =
+	| { readonly type: 'lint-ready' }
+	| { readonly type: 'lint-failed', readonly error: string }
+	| { readonly type: 'lint-done', readonly summary: LintSummary, readonly query?: FlowrQueryRecord };
+
+/** a worker (of the browser or of node) that reads the code once and then runs the rules it is sent, one at a time */
+export interface LintEndpoint {
+	/** its next answer, or why it failed */
+	next(): Promise<LintMessage>
+	run(rule: string): void
+	terminate(): void
+}
+
+/**
+ * Runs the linting rules in workers, as flowR's rules run without a break and only a worker can be stopped.
+ * A rule over the time limit stops its worker and counts as not run; the next rules go to a fresh worker,
+ * which reads the code again. Reading the code does not count against a rule's limit.
+ */
+/** how long a linting worker may take to read the code before its rules count as not run */
+const MaxReadSeconds = 900;
+
+export function lintInWorkers(spawn: () => LintEndpoint, limitSeconds: number): { runner: LintRunner, stop: () => void } {
+	let current: LintEndpoint | undefined;
+	let stopped = false;
+	const failed = (rule: string, error: string) => ({ summary: { rule, ...ruleDocs(rule), count: 0, results: [], error } });
+	const runner: LintRunner = async(rules, started, done) => {
+		const queue = [...rules];
+		while(queue.length > 0 && !stopped) {
+			let w: LintEndpoint;
+			try {
+				w = current = spawn();
+			} catch(e) {
+				for(const rule of queue.splice(0)) {
+					done(failed(rule, `no linting worker: ${e instanceof Error ? e.message : String(e)}`));
+				}
+				break;
+			}
+			let readTimer: ReturnType<typeof setTimeout> | undefined;
+			const ready = await Promise.race([w.next(), new Promise<'timeout'>(resolve => {
+				readTimer = setTimeout(() => resolve('timeout'), MaxReadSeconds * 1000);
+			})]);
+			clearTimeout(readTimer);
+			if(ready === 'timeout' || ready.type !== 'lint-ready') {
+				w.terminate();
+				const error = ready === 'timeout' ? `the linting worker did not read the code within ${MaxReadSeconds} s`
+					: ready.type === 'lint-failed' ? ready.error : 'the linting worker did not start';
+				for(const rule of queue.splice(0)) {
+					done(failed(rule, error));
+				}
+				break;
+			}
+			while(queue.length > 0 && !stopped) {
+				const rule = queue[0];
+				started(rule);
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const answer = w.next();
+				w.run(rule);
+				const res = await Promise.race([answer, new Promise<'timeout'>(resolve => {
+					timer = setTimeout(() => resolve('timeout'), limitSeconds * 1000);
+				})]);
+				clearTimeout(timer);
+				queue.shift();
+				if(res === 'timeout' || res.type !== 'lint-done') {
+					w.terminate();
+					done(failed(rule, res === 'timeout' ? `stopped after ${limitSeconds} s, the time limit of a linting rule (lintTimeout in the policy)`
+						: res.type === 'lint-failed' ? res.error : 'no result'));
+					break;
+				}
+				done({ summary: res.summary, query: res.query });
+			}
+		}
+		current?.terminate();
+	};
+	return { runner, stop: () => {
+		stopped = true;
+		current?.terminate();
+	} };
+}
+
+/** told of the result so far: the findings are final, the linting rules in `pending` still run */
+export type PartialListener = (r: CoreResult & { readonly pending: readonly string[] }) => void;
+
 /** yields to the event loop, so a page can repaint its progress between the steps */
 const breathe = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
 /** Finds the capability calls of everything the analyzer was given, traces their values, and runs the linting rules. */
-export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calleesOf: CalleesOf, progress: ProgressListener = () => {}): Promise<CoreResult> {
+export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calleesOf: CalleesOf, progress: ProgressListener = () => {}, onPartial?: PartialListener, lintRunner?: LintRunner): Promise<CoreResult> {
+	const rules = lintRulesOf(policy);
+	const lintDone = new Map<string, LintSummary>();
+	const lintQueries: FlowrQueryRecord[] = [];
+	let lintCurrent: { rule: string, at: number } | undefined;
+	let onLintChange: () => void = () => {};
+	const lintWork = lintRunner?.(rules, rule => {
+		lintCurrent = { rule, at: Date.now() };
+	}, ({ summary, query }) => {
+		lintDone.set(summary.rule, summary);
+		if(query !== undefined) {
+			lintQueries.push(query);
+		}
+		onLintChange();
+	});
+	/* the rules not done yet need at most their time limit each; reading the code again after a stopped rule comes on top, so this is an estimate, not a bound */
+	const lintBound = () => {
+		if(lintRunner === undefined) {
+			return undefined;
+		}
+		const left = rules.filter(r => !lintDone.has(r));
+		const running = lintCurrent !== undefined && left.includes(lintCurrent.rule) ? lintCurrent : undefined;
+		return left.length * policy.lintTimeout * 1000 - (running ? Math.min(policy.lintTimeout * 1000, Date.now() - running.at) : 0);
+	};
 	progress({ phase: 'dataflow', message: 'parsing and building the dataflow graph' });
 	await breathe();
 	const queries: FlowrQueryRecord[] = [];
@@ -243,17 +360,32 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	queries.push({ type: 'signature-database', request: { type: 'callees', functions: lookups }, ms: 0,
 		result: `${lookups} package function(s) looked up for what they call inside their package${unresolved.size > 0 ? `, no data for ${[...unresolved].join(', ')}` : ''}` });
 
-	/* where the values of every candidate call come from, in one query */
+	/* where the values of the candidate calls come from, in batches, so progress can tell how far the tracing is */
 	const sources = new Map<NodeId, InputSource[]>();
 	if(candidates.length > 0) {
-		progress({ phase: 'origins', message: `tracing the values of ${candidates.length} sink call(s)` });
-		await breathe();
 		const crit = candidates.map(c => SlicingCriterion.fromId(c.id));
-		t0 = Date.now();
-		const res = await analyzer.query([{ type: 'input-sources', criterion: crit }]);
-		queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: crit }, ms: Date.now() - t0, result: `the value sources of ${crit.length} call(s)` });
-		const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
-		candidates.forEach((c, i) => sources.set(c.id, results[crit[i]] ?? []));
+		const message = `tracing the values of ${crit.length} sink call(s)`;
+		progress({ phase: 'origins', message, done: 0, total: crit.length });
+		await breathe();
+		let batch = 4;
+		const tracing = Date.now();
+		for(let at = 0; at < crit.length;) {
+			const part = crit.slice(at, at + batch);
+			t0 = Date.now();
+			const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
+			const ms = Date.now() - t0;
+			queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms, result: `the value sources of ${part.length} call(s)` });
+			const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+			/* a call flowR returned nothing for has values of unknown source, not none */
+			part.forEach((c, i) => sources.set(candidates[at + i].id, results[c] ?? [{ id: candidates[at + i].id, types: ['unknown'] }]));
+			at += part.length;
+			const own = (Date.now() - tracing) / at * (crit.length - at);
+			const bound = lintBound();
+			progress({ phase: 'origins', message, done: at, total: crit.length, etaMs: Math.max(own, bound ?? 0) });
+			await breathe();
+			/* about four updates a second: bigger batches when the calls trace fast */
+			batch = Math.max(1, Math.min(64, Math.round(part.length * 250 / Math.max(1, ms))));
+		}
 	}
 
 	const findings: Finding[] = candidates.map(c => {
@@ -276,8 +408,32 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		};
 	});
 
-	const lint = await runLint(analyzer, lintRulesOf(policy), progress, queries);
-	return { findings, lint, unresolvedPackages: [...unresolved].sort(), queries };
+	const unresolvedPackages = [...unresolved].sort();
+	const inOrder = () => rules.flatMap(r => lintDone.get(r) ?? []);
+	const partial = () => onPartial?.({ findings, lint: inOrder(), unresolvedPackages, queries: [...queries, ...lintQueries], pending: rules.filter(r => !lintDone.has(r)) });
+	let lint: LintSummary[];
+	if(lintWork === undefined) {
+		lint = await runLint(analyzer, rules, progress, queries, done => onPartial?.({ findings, lint: done, unresolvedPackages, queries: [...queries], pending: rules.slice(done.length) }));
+	} else {
+		/* the rules ran alongside: report what is done and wait for the rest */
+		const tell = () => {
+			const left = rules.filter(r => !lintDone.has(r));
+			const running = lintCurrent !== undefined && left.includes(lintCurrent.rule) ? lintCurrent.rule : left[0];
+			progress({ phase: 'lint', message: left.length === 0 ? `${rules.length} linting rule(s) done` : `linting rule ${running}`,
+				done: lintDone.size, total: rules.length, etaMs: lintBound() });
+		};
+		onLintChange = () => {
+			tell();
+			partial();
+		};
+		tell();
+		partial();
+		await lintWork;
+		onLintChange = () => {};
+		lint = inOrder();
+		queries.push(...lintQueries);
+	}
+	return { findings, lint, unresolvedPackages, queries };
 }
 
 /** Assigns the tier and wraps everything into a report. */
@@ -296,37 +452,52 @@ function contractOf(sig: readonly { name: string, props: number }[] | undefined)
 	return { injectable: named(ArgProp.Injectable), resource: named(ArgProp.Resource), written: named(ArgProp.Written) };
 }
 
-async function runLint(analyzer: FlowrAnalyzer, rules: readonly string[], progress: ProgressListener, queries: FlowrQueryRecord[]): Promise<LintSummary[]> {
+async function runLint(analyzer: FlowrAnalyzer, rules: readonly string[], progress: ProgressListener, queries: FlowrQueryRecord[], partial: (done: LintSummary[]) => void): Promise<LintSummary[]> {
 	const out: LintSummary[] = [];
 	for(const [i, rule] of rules.entries()) {
+		partial([...out]);
 		progress({ phase: 'lint', message: `linting rule ${rule}`, done: i, total: rules.length });
 		await breathe();
-		try {
-			const t1 = Date.now();
-			const res = await analyzer.query([{ type: 'linter', rules: [rule as never] }]);
-			const n = ((res.linter as { results: Record<string, { results?: unknown[] }> }).results[rule]?.results ?? []).length;
-			queries.push({ type: 'linter', request: { type: 'linter', rules: [rule] }, ms: Date.now() - t1, result: `${n} result(s) of ${rule}` });
-			const byRule = (res.linter as { results: Record<string, { results?: Record<string, unknown>[], error?: unknown }> }).results;
-			const r = byRule[rule];
-			if(r === undefined || r.error !== undefined || r.results === undefined) {
-				out.push({ rule, ...ruleDocs(rule), count: 0, results: [], error: r?.error === undefined ? 'no result' : String((r.error as Error)?.message ?? r.error) });
-				continue;
-			}
-			out.push({ rule, ...ruleDocs(rule), count: r.results.length, results: r.results.map(x => lintResult(rule, x)) });
-		} catch(e) {
-			out.push({ rule, ...ruleDocs(rule), count: 0, results: [], error: e instanceof Error ? e.message : String(e) });
+		const { summary, query } = await lintRule(analyzer, rule);
+		out.push(summary);
+		if(query !== undefined) {
+			queries.push(query);
 		}
 	}
 	progress({ phase: 'lint', message: `${rules.length} linting rule(s) done`, done: rules.length, total: rules.length });
 	return out;
 }
 
+/** runs one linting rule of flowR */
+export async function lintRule(analyzer: FlowrAnalyzer, rule: string): Promise<{ summary: LintSummary, query?: FlowrQueryRecord }> {
+	try {
+		const t1 = Date.now();
+		const res = await analyzer.query([{ type: 'linter', rules: [rule as never] }]);
+		const byRule = (res.linter as { results: Record<string, { results?: Record<string, unknown>[], error?: unknown }> }).results;
+		const r = byRule[rule];
+		const query: FlowrQueryRecord = { type: 'linter', request: { type: 'linter', rules: [rule] }, ms: Date.now() - t1, result: `${r?.results?.length ?? 0} result(s) of ${rule}` };
+		if(r === undefined || r.error !== undefined || r.results === undefined) {
+			return { query, summary: { rule, ...ruleDocs(rule), count: 0, results: [], error: r?.error === undefined ? 'no result' : String((r.error as Error)?.message ?? r.error) } };
+		}
+		return { query, summary: { rule, ...ruleDocs(rule), count: r.results.length, results: r.results.map(x => lintResult(rule, x)) } };
+	} catch(e) {
+		return { summary: { rule, ...ruleDocs(rule), count: 0, results: [], error: e instanceof Error ? e.message : String(e) } };
+	}
+}
+
 /* the wiki pages of flowR's linting rules, `[Linting-Rule]-<page>`; rules without a page link the overview */
-const WikiPages = new Set(['Absolute-File-Paths', 'Call-Contracts', 'Code-Clones', 'Dataframe-Access-Validation', 'Dead-Code',
-	'Deprecated-Functions', 'File-Path-Validity', 'Interactive-Functions', 'Namespace-Access', 'Naming-Convention', 'Network-Functions',
-	'No-Leaked-Credentials', 'Overwritten-File', 'Problematic-Inputs', 'Process-State-In-Session', 'Roxygen-Arguments',
-	'Secret-Exfiltration', 'Seeded-Randomness', 'Software-Has-License', 'Software-Has-Tests', 'Stop-Call', 'Syntactically-Valid',
-	'Unclosed-Connection', 'Undefined-Symbol', 'Unescaped-Arguments', 'Unused-Definitions', 'Unused-Import', 'Useless-Loop']);
+const WikiPages = new Set([
+	'Absolute-File-Paths', 'Bogus-Return', 'Call-Arguments', 'Call-Contracts', 'Class-String-Comparison', 'Code-Clones',
+	'Compiled-Code', 'Dataframe-Access-Validation', 'Dead-Code', 'Dependency-Declaration', 'Deprecated-Functions',
+	'Description-Metadata', 'Documentation-Mismatch', 'File-Path-Validity', 'Foreign-Function-Calls',
+	'Global-Environment-Modification', 'Interactive-Functions', 'Namespace-Access', 'Namespace-Tampering',
+	'Naming-Convention', 'Network-Functions', 'No-Leaked-Credentials', 'Non-Ascii-Code', 'Overwritten-File',
+	'Package-Data', 'Package-Hooks', 'Package-Metafiles', 'Package-Runtime', 'Package-Structure', 'Problematic-Inputs',
+	'Process-State-In-Session', 'Rd-Files', 'Roxygen-Arguments', 'S3-Method-Consistency', 'Secret-Exfiltration',
+	'Seeded-Randomness', 'Software-Has-License', 'Software-Has-Tests', 'Stop-Call', 'Syntactically-Valid',
+	'True-False-Abbreviation', 'Unclosed-Connection', 'Undefined-Symbol', 'Unescaped-Arguments', 'Unused-Definitions',
+	'Unused-Import', 'Useless-Loop'
+]);
 const Wiki = 'https://github.com/flowr-analysis/flowr/wiki/';
 
 export function ruleDocs(rule: string): { title?: string, about?: string, docs: string } {

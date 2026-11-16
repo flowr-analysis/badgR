@@ -25,10 +25,18 @@ export type WorkerRequest = { readonly type: 'warm', readonly base: string } | {
 	readonly policyText: string
 	readonly policyName: string
 	readonly policyHash: string
-};
+}
+	/* between the analysis worker and its linting worker */
+	| { readonly type: 'lint-init', readonly files: readonly SourceFile[], readonly packages: readonly LintPackage[] }
+	| { readonly type: 'lint-rule', readonly rule: string };
+
+/** what the linting worker needs of a package: its version and exports */
+export interface LintPackage { readonly name: string, readonly v?: string, readonly x: readonly string[] }
 
 export type WorkerResponse =
 	| { readonly type: 'progress', readonly id: number, readonly progress: Progress }
+	/** a report while the analysis still runs: its findings are final, `report.pending` lists the linting rules still running, so its tier may still drop */
+	| { readonly type: 'partial', readonly id: number, readonly report: Report }
 	| { readonly type: 'report', readonly id: number, readonly report: Report }
 	| { readonly type: 'error', readonly id: number, readonly error: string }
 	| { readonly type: 'ready', readonly sigdb?: string, readonly vocabulary: PolicyVocabulary };

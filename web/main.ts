@@ -1,7 +1,7 @@
 /** The badgR playground: input on the left, report on the right. Nothing here sends data anywhere. */
 import type { EditorView } from '@codemirror/view';
 import { badgeSvg } from '../src/badge';
-import type { Progress, Report } from '../src/core';
+import type { FlowrQueryRecord, Progress, Report } from '../src/core';
 import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
 import { type Policy, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
 import { markdownReport } from '../src/report';
@@ -32,7 +32,7 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 	}
 	return e;
 };
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : /(s|x|ch|sh)$/.test(word) ? 'es' : 's'}`;
 const link = (href: string, text: string, title?: string) => {
 	const a = el('a', '', text);
 	a.href = href;
@@ -51,7 +51,7 @@ const worker = new Worker('worker.js');
 let vocabulary: PolicyVocabulary | undefined;
 let sigdbTag: string | undefined;
 let nextId = 0;
-let running: { id: number, resolve: (r: Report) => void, reject: (e: Error) => void, onProgress: (p: Progress) => void } | undefined;
+let running: { id: number, resolve: (r: Report) => void, reject: (e: Error) => void, onProgress: (p: Progress) => void, onPartial: (r: Report) => void } | undefined;
 
 worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 	const m = ev.data;
@@ -67,6 +67,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 	}
 	if(m.type === 'progress') {
 		running.onProgress(m.progress);
+	} else if(m.type === 'partial') {
+		running.onPartial(m.report);
 	} else if(m.type === 'report') {
 		running.resolve(m.report);
 	} else {
@@ -83,7 +85,7 @@ function showVersions(): void {
 	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
 	const foot = $('footer');
 	foot.replaceChildren(`badgR ${BADGR_VERSION} · `, link(f.href, `flowR ${FLOWR_VERSION}`),
-		` · signature database ${sigdbTag ?? '?'}, with the latest version of each CRAN package (the command line knows every version) · GPL-3.0`);
+		` · signature database ${sigdbTag ?? '?'}, latest version of each CRAN package (the command line has every version) · GPL-3.0`);
 }
 showVersions();
 if(BADGR_LIVE) {
@@ -256,25 +258,6 @@ function policyChanged(text: string): void {
 	} catch{ /* private mode: the policy lasts as long as the page */ }
 	drawPolicyGrid();
 	drawTierTable();
-
-/* the start: the four example tiers, one click each */
-for(const ex of Examples.slice(0, 4)) {
-	const b = el('button', 'start-card');
-	b.type = 'button';
-	const img = el('img');
-	img.alt = '';
-	const tier = policy?.tiers.find(t => t.name === ex.label) ?? (ex.label === policy?.fallbackTier.name ? policy.fallbackTier : undefined);
-	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(ex.label, tier?.color ?? '#6b6b6b'))}`;
-	const holder = el('span', 'start-badge');
-	holder.append(img);
-	b.append(holder, el('span', '', sentence(ex.title) + '.'));
-	b.addEventListener('click', () => {
-		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
-		setText(codeView, ex.files.map(f => f.content).join('\n'));
-		runEditor();
-	});
-	$('start').append(b);
-}
 	retier();
 }
 
@@ -294,46 +277,174 @@ drawPolicyGrid();
 
 /* ---------------------------------------------------------------- progress */
 
-const StepNames: [Progress['phase'], string][] = [['files', 'files'], ['dataflow', 'reading the code'], ['sinks', 'risky calls'], ['origins', 'where values come from'], ['lint', 'more checks']];
+/*
+ * The progress box only ever touches its own few elements: progress can arrive every few hundred
+ * milliseconds and must never redraw the report. Until the first partial report it floats over the report
+ * (it takes no space, so nothing moves); once a partial report shows, it sits above it.
+ */
+const StepNames: [Progress['phase'] | 'fetch', string][] = [['fetch', 'fetch'], ['files', 'files'], ['dataflow', 'dataflow'], ['sinks', 'risky calls'], ['origins', 'value sources'], ['lint', 'linting rules']];
 
-function showProgress(label: string): ((p: Progress | string) => void) & { stop: () => void } {
-	$('progress').hidden = false;
+/** a duration, short */
+function duration(ms: number): string {
+	if(ms < 1) {
+		return '<1 ms';
+	}
+	if(ms < 1000) {
+		return `${Math.round(ms)} ms`;
+	}
+	if(ms < 60_000) {
+		return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+	}
+	const min = Math.floor(ms / 60_000);
+	const sec = Math.round(ms % 60_000 / 1000);
+	return sec === 0 || sec === 60 ? `${min + (sec === 60 ? 1 : 0)} min` : `${min} min ${sec} s`;
+}
+
+interface ProgressBox {
+	(p: Progress | string): void
+	/** stops the clock */
+	stop(): void
+	/** a partial report shows: the box now sits above it instead of over it */
+	attach(): void
+}
+
+function showProgress(label: string): ProgressBox {
+	const box = $('progress');
+	box.hidden = false;
+	box.classList.remove('attached');
 	$('error').hidden = true;
 	$('empty').hidden = true;
-	const steps = $('steps');
-	steps.replaceChildren(el('span', 'step active', 'fetch'), ...StepNames.map(([, name]) => el('span', 'step', name)));
 	const fill = $('bar-fill');
 	const text = $('progress-text');
+	const count = $('progress-count');
 	const started = performance.now();
-	let lastPhase = -1;
+	const steps = StepNames.map(([, name], i) => {
+		const span = el('span', i === 0 ? 'step active' : 'step');
+		const time = el('span', 'step-time');
+		span.append(el('span', 'step-name', name), time);
+		return { span, time, from: i === 0 ? started : undefined as number | undefined };
+	});
+	$('steps').replaceChildren(...steps.map(s => s.span));
+	fill.className = 'indeterminate';
+	fill.style.width = '';
+	count.textContent = '';
+	let at = 0;
 	let message = label;
-	const tick = setInterval(() => {
-		text.textContent = `${message} · ${((performance.now() - started) / 1000).toFixed(1)} s`;
-	}, 100);
+	/* floating: a negative margin as tall as the box, set at once so the report does not move even for a frame */
+	let attached = false;
+	let height = -1;
+	const place = () => {
+		const h = attached ? -1 : box.getBoundingClientRect().height;
+		if(h !== height) {
+			height = h;
+			box.style.marginBottom = attached ? '' : `-${h}px`;
+		}
+	};
+	const resized = new ResizeObserver(place);
+	resized.observe(box);
+	const clock = $('progress-clock');
+	/* the time left, as the worker last said, counted down here between its messages */
+	let eta: { ms: number, at: number } | undefined;
+	const left = (now: number) => {
+		if(eta === undefined) {
+			return 'estimating…';
+		}
+		const ms = eta.ms - (now - eta.at);
+		if(ms <= 0) {
+			return 'taking longer than estimated';
+		}
+		const s = duration(Math.max(1000, Math.ceil(ms / 1000) * 1000));
+		return `about ${s} left`;
+	};
+	const paint = () => {
+		const now = performance.now();
+		const from = steps[at].from;
+		steps[at].time.textContent = from === undefined ? '' : duration(now - from);
+		clock.textContent = `${duration(now - started)} · ${left(now)}`;
+		if(text.textContent !== message) {
+			text.textContent = message;
+		}
+		/* the box may have grown with its text: still no space taken, even without a frame for the observer */
+		place();
+	};
+	paint();
+	const tick = setInterval(paint, 250);
 	const update = (p: Progress | string) => {
 		if(typeof p === 'string') {
 			message = p;
 			fill.className = 'indeterminate';
+			fill.style.width = '';
+			count.textContent = '';
+			paint();
 			return;
 		}
 		if(p.phase === 'done') {
 			return;
 		}
-		const at = StepNames.findIndex(([phase]) => phase === p.phase);
-		if(at !== lastPhase) {
-			lastPhase = at;
-			[...steps.children].forEach((s, i) => s.className = 'step' + (i - 1 < at ? ' done' : i - 1 === at ? ' active' : ''));
+		if(p.etaMs !== undefined) {
+			eta = { ms: p.etaMs, at: performance.now() };
+		}
+		const i = StepNames.findIndex(([phase]) => phase === p.phase);
+		/* the linting rules run beside the rest: a late message of an earlier step only updates the time left */
+		if(i < at) {
+			paint();
+			return;
+		}
+		/* steps only go forward; a step that was skipped gets no time */
+		if(i > at) {
+			const now = performance.now();
+			for(let j = at; j < i; j++) {
+				const from = steps[j].from;
+				steps[j].span.className = 'step done';
+				steps[j].time.textContent = from === undefined ? '' : duration(now - from);
+			}
+			steps[i].from = now;
+			steps[i].span.className = 'step active';
+			at = i;
 		}
 		message = p.message;
 		if(p.total) {
+			const done = Math.min(p.done ?? 0, p.total);
 			fill.className = '';
-			fill.style.width = `${Math.round(100 * (at + (p.done ?? 0) / p.total) / StepNames.length)}%`;
+			fill.style.width = `${Math.round(100 * done / p.total)}%`;
+			count.textContent = `${done} of ${p.total}`;
 		} else {
 			fill.className = 'indeterminate';
 			fill.style.width = '';
+			count.textContent = '';
+		}
+		paint();
+	};
+	return Object.assign(update, {
+		stop: () => {
+			clearInterval(tick);
+			resized.disconnect();
+		},
+		attach: () => {
+			attached = true;
+			box.classList.add('attached');
+			place();
+		}
+	});
+}
+
+/**
+ * Keeps what the reader looks at in place while the report above it changes: the first section of the
+ * report that reaches into the window is measured before and after, and the page scrolls by the difference.
+ */
+function keepPlace(): () => void {
+	const sections = [...document.querySelectorAll<HTMLElement>('#result > .verdict, #result > .block')];
+	const anchor = sections.find(s => s.getBoundingClientRect().bottom > 0);
+	if(anchor === undefined || scrollY === 0) {
+		return () => {};
+	}
+	const before = anchor.getBoundingClientRect().top;
+	return () => {
+		const moved = anchor.getBoundingClientRect().top - before;
+		if(moved !== 0) {
+			scrollBy(0, moved);
 		}
 	};
-	return Object.assign(update, { stop: () => clearInterval(tick) });
 }
 
 function showError(msg: string): void {
@@ -369,6 +480,7 @@ async function analyze(target: string, load: (progress: (msg: string) => void) =
 	selected = undefined;
 	document.body.classList.add('busy');
 	const update = showProgress(`reading ${target}`);
+	let partial = false;
 	try {
 		const files = await load(m => update(m));
 		const text = policyText;
@@ -377,7 +489,14 @@ async function analyze(target: string, load: (progress: (msg: string) => void) =
 		if(run === undefined) {
 			const id = ++nextId;
 			const report = await new Promise<Report>((resolve, reject) => {
-				running = { id, resolve, reject, onProgress: update };
+				running = { id, resolve, reject, onProgress: update, onPartial: r => {
+					/* the findings are final, the linting rules come in one by one */
+					const keep = partial ? keepPlace() : () => {};
+					update.attach();
+					show({ report: { ...r, target }, files, policyText: text, fromEditor, source }, partial ? 'partial' : 'full');
+					partial = true;
+					keep();
+				} };
 				void sha256(text).then(policyHash => worker.postMessage({
 					type: 'analyze', id, base, target, files, policyText: text,
 					policyName: text === defaultPolicy ? 'default.yaml' : 'custom policy', policyHash
@@ -387,11 +506,17 @@ async function analyze(target: string, load: (progress: (msg: string) => void) =
 			cache.set(key, run);
 		}
 		update.stop();
+		const keep = keepPlace();
 		$('progress').hidden = true;
-		show({ ...run, report: { ...run.report, target }, fromEditor, source });
+		show({ ...run, report: { ...run.report, target }, fromEditor, source }, partial ? 'final' : 'full');
+		keep();
 		then?.();
 	} catch(e) {
 		update.stop();
+		if(partial) {
+			/* a provisional tier is no result */
+			$('result').hidden = true;
+		}
 		showError(e instanceof SourceError || e instanceof Error ? e.message : String(e));
 	} finally {
 		busy = false;
@@ -403,13 +528,25 @@ async function analyze(target: string, load: (progress: (msg: string) => void) =
 	}
 }
 
-function show(run: Run): void {
+/** what the report on the page shows, so a partial report and the final one only redraw what changed */
+let drawn: { files: readonly SourceFile[], target: string, findings: string, lintResults: number } | undefined;
+const findingIds = (r: Report) => r.findings.map(f => f.id).join('\u0000');
+
+/**
+ * `full` draws a report anew; `partial` and `final` follow a partial report of the same run and keep
+ * the findings table, the code view, and what is open as it is. Only a complete report goes into the link.
+ */
+function show(run: Run, mode: 'full' | 'partial' | 'final' = 'full'): void {
 	last = run;
 	$('empty').hidden = true;
 	$('shared').hidden = true;
-	render(run.report, run.files);
+	const same = mode !== 'full' && drawn !== undefined && drawn.files === run.files && drawn.target === run.report.target && drawn.findings === findingIds(run.report);
+	render(run.report, run.files, same);
 	markStale();
-	writeLink();
+	/* only a complete report goes into the link */
+	if(mode !== 'partial' && run.report.pending === undefined) {
+		writeLink();
+	}
 }
 
 /* ---------------------------------------------------------------- links that bring the result back */
@@ -475,7 +612,7 @@ function playgroundLink(r: Report, files: readonly SourceFile[]): HTMLElement {
 		b.title = 'the code is too long for a link to the flowR playground';
 		return b;
 	}
-	const a = link(url, 'flowR playground', 'open this code in flowR\'s playground, with the lines of the findings marked: dataflow, slices, and linting results');
+	const a = link(url, 'flowR playground', 'open this code in flowR\'s playground, with the lines of the findings marked, to see its dataflow, slices, and linting results');
 	a.className = 'button secondary small';
 	return a;
 }
@@ -483,8 +620,8 @@ function playgroundLink(r: Report, files: readonly SourceFile[]): HTMLElement {
 function shareButton(): HTMLButtonElement {
 	const shareable = last !== undefined && last.source.kind !== 'files';
 	const b = copyButton('copy link', () => location.href, shareable
-		? 'a link that opens this result here; the code travels inside the link, never to a server'
-		: 'uploaded files are not part of a link; share report.md instead');
+		? 'a link to this result. The code is inside the link and never goes to a server.'
+		: 'uploaded files cannot go into a link. Share report.md instead.');
 	b.disabled = !shareable;
 	return b;
 }
@@ -504,7 +641,7 @@ function retier(): void {
 	const ran = new Set(last.report.lint.map(l => l.rule));
 	if(core(old) !== core(policy) || !lintRulesOf(policy).every(r => ran.has(r))) {
 		$('result').classList.add('stale');
-		$('code-status').textContent = 'the policy changed what is analyzed: analyze again';
+		$('code-status').textContent = 'the policy changed what is analyzed. Analyze again.';
 		return;
 	}
 	const report: Report = {
@@ -633,16 +770,22 @@ liveButton.addEventListener('click', () => {
 
 const TierColor: Record<string, string> = { gold: 't-gold', silver: 't-silver', bronze: 't-bronze', none: 't-none' };
 
-function download(name: string, type: string, content: string): HTMLAnchorElement {
+/** a link that downloads `content`, made only when it is clicked */
+function download(name: string, type: string, content: () => string): HTMLAnchorElement {
 	const a = el('a', 'button secondary small', name);
-	a.href = URL.createObjectURL(new Blob([content], { type }));
+	a.href = '#';
 	a.download = name;
+	a.addEventListener('click', () => {
+		const url = URL.createObjectURL(new Blob([content()], { type }));
+		a.href = url;
+		setTimeout(() => URL.revokeObjectURL(url), 60_000);
+	});
 	return a;
 }
 
 function importReviewButton(): HTMLElement {
 	const label = el('label', 'button secondary small', 'import review');
-	label.title = 'read a review.json, from this page or written by hand, and add its decisions';
+	label.title = 'load a review.json and add its decisions';
 	const input = el('input');
 	input.type = 'file';
 	input.accept = '.json,application/json';
@@ -753,13 +896,13 @@ const TypeWords: Record<string, string> = {
 const ClassWords: Record<string, string> = { severe: 'dangerous', outward: 'files or network', other: 'output or database' };
 /* what a class covers, read from the policy rather than written here */
 const ClassLong: Record<string, string> = new Proxy({}, {
-	get: (_, c: string) => `${cw(c)} calls: the capabilities ${listing(Object.entries(policy?.capabilities ?? {}).filter(([, v]) => v.class === c).map(([k]) => k))}`
+	get: (_, c: string) => `${cw(c)} calls, with the capabilities ${listing(Object.entries(policy?.capabilities ?? {}).filter(([, v]) => v.class === c).map(([k]) => k))}`
 });
 const OriginWords: Record<string, string> = { author: 'the code', system: 'the system', parameter: 'parameters', unknown: 'unknown', outside: 'users, files, net', none: 'no value' };
 const OriginLong: Record<string, string> = {
 	author: 'values written in the code itself, such as constants',
 	system: 'values the deployment or the system sets, such as options or environment variables',
-	parameter: 'parameters of the app\'s own functions, which whoever calls them decides',
+	parameter: 'parameters of the app\'s own functions, set by whoever calls them',
 	unknown: 'values flowR could not trace back',
 	outside: 'values from users, files, or the network',
 	none: 'calls without any traced value'
@@ -784,6 +927,9 @@ function describe(f: Finding): string {
 /* the flowR documentation of what badgR asks flowR */
 const Wiki = 'https://github.com/flowr-analysis/flowr/wiki/';
 const Docs = {
+	queryApi:      `${Wiki}Query-API`,
+	dataflow:      `${Wiki}Dataflow-Graph`,
+	lintOverview:  `${Wiki}Linter`,
 	inputSources:  `${Wiki}%5BQuery%5D-Input-Sources`,
 	functionInfo:  `${Wiki}%5BQuery%5D-Function-Info`,
 	sigdb:         `${Wiki}Signature-Database`,
@@ -884,7 +1030,7 @@ function reviewPicker(f: Finding, compact: boolean): HTMLElement {
 		const b = el('button', `rv-b rv-${st}`, compact ? { 'tolerated': '✓', 'false-positive': 'FP', 'to-fix': 'fix' }[st] : ReviewLabel[st]);
 		b.type = 'button';
 		b.setAttribute('aria-pressed', String(now === st));
-		b.title = now === st ? `${ReviewLabel[st]}: click to undo` : `mark as ${ReviewLabel[st]} (does not change the tier)`;
+		b.title = now === st ? `${ReviewLabel[st]}. Click to undo.` : `mark as ${ReviewLabel[st]} (does not change the tier)`;
 		b.addEventListener('click', ev => {
 			ev.stopPropagation();
 			setReview(f, now === st ? undefined : st, reviewOf(f)?.note);
@@ -905,28 +1051,52 @@ function reviewBox(f: Finding): HTMLElement {
 	return box;
 }
 /** how the findings table was grouped and unfolded, kept while the same report is redrawn */
-const view: { target?: string, count?: number, groupBy: 'capability' | 'call' | 'file' | 'none', expanded: Set<string>, full: Set<string> } =
-	{ groupBy: 'none', expanded: new Set(), full: new Set() };
+const view: { target?: string, count?: number, groupBy: 'capability' | 'call' | 'file' | 'none', expanded: Set<string>, full: Set<string>, active: Set<string> } =
+	{ groupBy: 'none', expanded: new Set(), full: new Set(), active: new Set() };
 
 let selectFinding: (f: Finding, quiet?: boolean) => void = () => {};
 let revealFinding: (f: Finding) => void = () => {};
 let selectLint: (rule: string, r: LintResult, quiet?: boolean) => void = () => {};
 
-function render(r: Report, files: readonly SourceFile[]): void {
+/** the open state of the folds in `box` that have a `data-key`, to put back once `box` is drawn again */
+function openState(box: HTMLElement): () => void {
+	const was = new Map([...box.querySelectorAll<HTMLDetailsElement>('details[data-key]')].map(d => [d.dataset.key ?? '', d.open]));
+	return () => box.querySelectorAll<HTMLDetailsElement>('details[data-key]').forEach(d => {
+		const open = was.get(d.dataset.key ?? '');
+		if(open !== undefined) {
+			d.open = open;
+		}
+	});
+}
+
+/**
+ * Draws a report. `incremental` is for a later report of the same run with the same findings (a partial
+ * report with more linting rules done, or the final one): the findings table, the matrix, and the code
+ * stay as they are, and what the reader opened stays open.
+ */
+function render(r: Report, files: readonly SourceFile[], incremental = false): void {
 	$('result').hidden = false;
+	const pending = r.pending ?? [];
+	$('result').classList.toggle('partial', pending.length > 0);
+	const restore = incremental ? [openState($('ladder')), openState($('downloads')), openState($('lint'))] : [];
 	const svg = badgeSvg(r.tier.tier, r.tier.color);
 	const img = el('img');
 	img.alt = `badgR: ${r.tier.tier}`;
-	img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 	$('badge').replaceChildren(img);
+	/* while linting rules run, the tier is the best the code can still get */
+	const sofar = pending.length > 0 ? [el('em', 'provisional', 'so far')] : [];
 	$('verdict-title').replaceChildren(
 		...(r.tier.tier === 'none' ? [document.createTextNode('No tier '), el('span', 'sr', 'none')] : [el('span', `tier-word ${TierColor[r.tier.tier] ?? ''}`, r.tier.tier), document.createTextNode(' tier')]),
-		el('small', 'target', r.target));
+		...sofar, el('small', 'target', r.target));
 	/* the one line that says what the assigned tier means */
 	const spec = policy?.tiers.find(t => t.name === r.tier.tier);
-	const req = el('p', `requirement ${TierColor[r.tier.tier] ?? 't-none'}`, spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits: every finding needs a review by hand.' : ''));
+	const req = el('p', `requirement ${TierColor[r.tier.tier] ?? 't-none'}`, spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits. Review each finding yourself.' : ''));
 	$('verdict-req').replaceWith(req);
 	req.id = 'verdict-req';
+	const note = $('verdict-pending');
+	note.hidden = pending.length === 0;
+	note.textContent = pending.length === 0 ? '' : `${plural(pending.length, 'linting rule')} still running. ${r.tier.tier === policy?.fallbackTier.name ? 'Their results show up below as they come in.' : 'If one reports something, the tier can still drop.'}`;
 
 	/* next to the badge: counts at a glance, then labeled rows, then the most telling findings */
 	const summary = $('summary');
@@ -949,14 +1119,14 @@ function render(r: Report, files: readonly SourceFile[]): void {
 	if(!r.analyzed) {
 		stats.append(stat('not analyzed', 'bad', r.error ?? 'flowR could not analyze the code'));
 	} else {
-		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? '' : 'ok', 'calls that can do something the policy watches, such as running commands or reaching the network'));
+		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? '' : 'ok', 'calls that can do something the policy watches, such as run commands or use the network'));
 		for(const c of [...new Set(r.findings.map(f => f.class))]) {
 			const n = r.findings.filter(f => f.class === c).length;
 			stats.append(stat(`${n} ${cw(c)}`, `c-${c}`, `${sentence(ClassLong[c])}. Click to filter.`, filterBy(`class:${c}`)));
 		}
 		const outside = r.findings.filter(f => f.origins.includes('outside')).length;
 		if(outside > 0) {
-			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'values from users, files, or the network reach these calls. Click to filter.', filterBy('origin:outside')));
+			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'these calls get values from users, files, or the network. Click to filter.', filterBy('origin:outside')));
 		}
 		const hits = r.lint.filter(l => l.count > 0);
 		const n = hits.reduce((s2, l) => s2 + l.count, 0);
@@ -965,13 +1135,17 @@ function render(r: Report, files: readonly SourceFile[]): void {
 			stats.append(stat(`${plural(n, 'lint result')}${fixes ? `, ${fixes} fixable` : ''}`, 'c-lint', `${listing(hits.map(l => `${l.rule} (${l.count})`))}. Click to see them.`,
 				() => $('lint').scrollIntoView({ block: 'start', behavior: 'smooth' })));
 		}
+		if(pending.length > 0) {
+			stats.append(stat(`${pending.length} still running`, 'c-pending', `linting rules not done yet: ${listing(pending)}. Click to see them.`,
+				() => $('lint').scrollIntoView({ block: 'start', behavior: 'smooth' })));
+		}
 	}
 	if(r.findings.length > 0) {
 		const c = reviewCounts(r.findings.map(f => reviewOf(f)?.state));
 		const done = r.findings.length - c.unreviewed;
 		stats.append(stat(done === 0 ? 'none reviewed' : `${done} of ${r.findings.length} reviewed`, c.unreviewed === 0 ? 'ok' : 'c-review',
-			done === 0 ? 'mark findings as tolerated, false positives, or to fix in the table or in a finding\'s details; this does not change the tier'
-				: `${c.tolerated} tolerated, ${c['false-positive']} false positives, ${c['to-fix']} to fix. Click to show the unreviewed ones.`,
+			done === 0 ? 'mark findings as tolerated, false positive, or to fix, in the table or in the details of a finding. The tier stays the same.'
+				: `${c.tolerated} tolerated, ${c['false-positive']} false positives, ${c['to-fix']} to fix. Click to show the rest.`,
 			filterBy('review:unreviewed')));
 	}
 	summary.append(stats);
@@ -990,9 +1164,9 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		why.title = above.violations.map(v => sentence(v.reason)).join('. ') + '.';
 		fact(`why not ${above.tier}`, why);
 	}
-	fact('check by hand', r.tier.review === 'full' ? 'Everything, by hand.' : sentence(r.tier.review) + '.');
+	fact('left to review', r.tier.review === 'full' ? 'All findings.' : sentence(r.tier.review) + '.');
 	if(r.unresolvedPackages.length > 0) {
-		fact('no data', `${listing(r.unresolvedPackages)}. Calls into ${r.unresolvedPackages.length > 1 ? 'them' : 'it'} were not followed.`);
+		fact('no data', `${listing(r.unresolvedPackages)}. badgR did not look inside ${r.unresolvedPackages.length > 1 ? 'these packages' : 'this package'}.`);
 	}
 	summary.append(facts);
 
@@ -1007,7 +1181,7 @@ function render(r: Report, files: readonly SourceFile[]): void {
 			const item = el('li');
 			const a = el('a', 'jump', where(f));
 			a.href = '#code-view';
-			a.title = 'show it in the code';
+			a.title = 'show in the code';
 			a.addEventListener('click', ev => {
 				ev.preventDefault();
 				selectFinding(f);
@@ -1031,7 +1205,7 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		/* at most a hundred per section, the rest is in the tables below and in the downloads */
 		ol.append(...items.slice(0, 100));
 		if(items.length > 100) {
-			ol.append(el('li', 'hint', `and ${items.length - 100} more, in the table below and in report.json`));
+			ol.append(el('li', 'hint', `${items.length - 100} more in the table below and in report.json`));
 		}
 		all.append(el('h4', '', title), ol);
 	};
@@ -1047,53 +1221,62 @@ function render(r: Report, files: readonly SourceFile[]): void {
 	section('Risky calls', [...r.findings].sort((a, b) => rank(a) - rank(b)).map(f => {
 		const item = el('li');
 		item.append(el('code', '', f.call), ` ${describe(f)}, at `, jump(where(f), () => selectFinding(f)), '.',
-			...(f.inputTypes.length > 0 ? [el('span', 'hint', ` flowR traced the input types ${listing(f.inputTypes)}.`)] : []));
+			...(f.inputTypes.length > 0 ? [el('span', 'hint', ` Input types: ${listing(f.inputTypes)}.`)] : []));
 		return item;
 	}));
 	section('Why the stricter tiers fail', r.tier.checks.filter(c => !c.met).flatMap(c => c.violations.map(v => {
 		const item = el('li');
-		item.append(`${sentence(c.tier)} fails because of ${v.reason}${v.findings.length ? ` (${plural(v.findings.length, 'finding')})` : ''}.`);
+		item.append(`${sentence(c.tier)} fails: ${v.reason}${v.findings.length ? ` (${plural(v.findings.length, 'finding')})` : ''}.`);
 		return item;
 	})));
 	section('Linting results', r.lint.flatMap(l => l.results.map(x => {
 		const item = el('li');
 		item.append(link(l.docs ?? Docs.linter, l.title ?? l.rule, l.about), ' at ', jump(`${x.file?.split('/').pop() ?? ''}:${x.loc?.[0] ?? '?'}`, () => selectLint(l.rule, x)), ': ', ...ticks(x.message),
-			x.quickFix ? `. flowR suggests a fix: ${x.quickFix.map(q => q.replacement ?? 'remove it').join(' or ')}.` : '.');
+			x.quickFix ? `. Suggested fix: ${x.quickFix.map(q => q.replacement ?? 'remove it').join(' or ')}.` : '.');
 		return item;
 	})));
 	$('all-results').hidden = all.childElementCount === 0;
 	/* what badgR asked flowR, each linked to its documentation */
 	const meta = $('verdict-meta');
-	meta.replaceChildren(`${plural(r.files.length, 'R file')} · ${(r.ms / 1000).toFixed(1)} s · flowR ${r.flowrVersion} · built on flowR's `,
-		link(`${Wiki}Dataflow-Graph`, 'dataflow graph'), ', ', link(Docs.functionInfo, 'function-info'), ', ', link(Docs.inputSources, 'input-sources'), ', and ',
+	meta.replaceChildren(`${plural(r.files.length, 'R file')} · ${pending.length > 0 ? 'still running' : duration(r.ms)} · flowR ${r.flowrVersion} · uses flowR's `,
+		link(Docs.dataflow, 'dataflow graph'), ', ', link(Docs.functionInfo, 'function-info'), ', ', link(Docs.inputSources, 'input-sources'), ', and ',
 		link(Docs.linter, 'linter'), ' queries and its ', link(Docs.sigdb, `signature database ${r.sigdb.tag ?? ''}`.trim()), ` · ${r.policy.name}`);
 	/* two actions in sight, the files in one menu */
+	const fixes = allFixes(r);
 	const menu = el('details', 'menu');
 	const ms = el('summary', 'button secondary small', 'Download');
 	const list = el('div', 'menu-list');
+	/* the files are made on a click, not on every redraw */
 	list.append(
-		download('badge.svg', 'image/svg+xml', svg),
-		download('report.json', 'application/json', JSON.stringify(reviewed(r), null, 2)),
-		download('report.md', 'text/markdown', markdownReport(reviewed(r))),
-		download('review.json', 'application/json', JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)),
+		download('badge.svg', 'image/svg+xml', () => svg),
+		download('report.json', 'application/json', () => JSON.stringify(reviewed(r), null, 2)),
+		download('report.md', 'text/markdown', () => markdownReport(reviewed(r))),
+		download('review.json', 'application/json', () => JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)),
 		copyButton('copy Markdown', () => markdownReport(reviewed(r)), 'the report as Markdown, with your review, to paste into an issue'),
-		...(allFixes(r).count > 0 ? [download('fixes.patch', 'text/x-diff', allFixes(r).patch)] : []),
+		...(fixes.count > 0 ? [download('fixes.patch', 'text/x-diff', () => fixes.patch)] : []),
 		importReviewButton());
+	menu.dataset.key = 'downloads';
 	menu.append(ms, list);
 	$('downloads').replaceChildren(shareButton(), playgroundLink(r, files), menu);
 
 	/* the tier ladder: one line per tier, the reasons fold out */
 	$('ladder').replaceChildren(...r.tier.checks.map(c => {
 		const spec = policy?.tiers.find(t => t.name === c.tier);
-		const item = el('li', `${c.met ? 'met' : 'failed'}${c.tier === r.tier.tier ? ' mine' : ''}`);
+		/* a tier met so far, whose linting rules still run, can still fail */
+		const waits = c.met ? (spec?.lint ?? []).filter(x => pending.includes(x)) : [];
+		const item = el('li', `${waits.length > 0 ? 'pending' : c.met ? 'met' : 'failed'}${c.tier === r.tier.tier ? ' mine' : ''}`);
 		/* only more than one reason folds: a single one is said in full on the line itself */
 		const folds = c.violations.length > 1;
 		const head = el(folds ? 'summary' : 'div', 'tier-line');
 		const name = el('span', `tier-name ${TierColor[c.tier] ?? ''}`, c.tier);
 		name.title = spec?.summary ?? spec?.description ?? '';
-		head.append(el('span', 'mark', c.met ? '✓' : '✗'), name);
+		const mark = el('span', 'mark', waits.length > 0 ? '…' : c.met ? '✓' : '✗');
+		if(waits.length > 0) {
+			mark.title = `met so far, waiting for ${listing(waits)}`;
+		}
+		head.append(mark, name);
 		if(c.tier === r.tier.tier) {
-			head.append(el('span', 'yours', 'assigned'));
+			head.append(el('span', 'yours', pending.length > 0 ? 'so far' : 'assigned'));
 		}
 		/* first what the tier asks for, then why the code misses it */
 		if(spec?.summary) {
@@ -1101,12 +1284,13 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		}
 		if(c.violations.length > 0) {
 			const first = concreteReason(r, c.violations[0], c.violations.length - 1);
-			first.prepend(el('strong', '', c.violations.length > 1 ? `Misses it, first because ` : 'Misses it because '));
+			first.prepend(el('strong', '', 'Fails because '));
 			first.classList.add('why');
 			head.append(first);
 		}
 		if(folds) {
 			const d = el('details');
+			d.dataset.key = c.tier;
 			d.open = c === above;
 			const ul = el('ul');
 			ul.append(...c.violations.slice(1).map(v => {
@@ -1136,6 +1320,23 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		return item;
 	}));
 
+	restore.slice(0, 2).forEach(f => f());
+	if(!incremental) {
+		renderFindings(r);
+	}
+	/* the code shows the linting results too: drawn again only when there are new ones */
+	const lintResults = r.lint.reduce((n, l) => n + l.results.length, 0);
+	if(!incremental || drawn?.lintResults !== lintResults) {
+		renderCode(r, files, incremental);
+	}
+	renderLint(r, incremental);
+	restore.at(-1)?.();
+	renderQueries(r, incremental);
+	drawn = { files, target: r.target, findings: findingIds(r), lintResults };
+}
+
+/** the matrix and the findings table, which only change with the findings */
+function renderFindings(r: Report): void {
 	/* sink class × origin, every class and origin of the policy */
 	const classes = policy ? [...new Set(Object.values(policy.capabilities).map(c => c.class))] : [];
 	const allClasses = [...new Set([...classes, ...r.findings.map(f => f.class)])];
@@ -1158,7 +1359,7 @@ function render(r: Report, files: readonly SourceFile[]): void {
 			const td = el('td', 'n');
 			const span = el('span', n ? (o === 'outside' ? 'hot' : 'warm') : 'zero', n ? String(n) : '·');
 			const calls = r.findings.filter(f => f.class === c && f.origins.includes(o));
-			span.title = n ? `${sentence(ClassLong[c] ?? c)}, with ${OriginLong[o] ?? o}: ${listing([...new Set(calls.map(f => `${f.call} (${where(f)})`))])}` : `none of the ${ClassLong[c] ?? c} gets ${OriginLong[o] ?? o}`;
+			span.title = n ? `${listing([...new Set(calls.map(f => `${f.call} (${where(f)})`))])} ${n === 1 ? 'gets' : 'get'} ${OriginLong[o] ?? o}` : `no ${cw(c)} call gets ${OriginLong[o] ?? o}`;
 			if(n) {
 				span.style.opacity = String(0.55 + 0.45 * n / max);
 				span.classList.add('clickable');
@@ -1173,28 +1374,36 @@ function render(r: Report, files: readonly SourceFile[]): void {
 	matrix.firstElementChild?.append(head);
 	matrix.lastElementChild?.append(...rows);
 
-	/* findings with filters */
-	let shown = r.findings;
+	/* findings with filters; the filters, groups, and folds stay while the same report is drawn again */
+	if(view.target !== r.target || view.count !== r.findings.length) {
+		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > 8 ? 'capability' : 'none', expanded: new Set(), full: new Set(), active: new Set() });
+	}
+	const active = view.active;
+	const matches = (f: Finding) => [...active].every(a => {
+		const [kind, value] = a.split(':');
+		return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : f.origins.includes(value);
+	});
+	let shown = r.findings.filter(matches);
 	const filters = $('filters');
 	filters.replaceChildren();
-	const active = new Set<string>();
 	const origins = [...new Set(r.findings.flatMap(f => f.origins))];
 	const keys = [...new Set(r.findings.map(f => `class:${f.class}`)), ...new Set(r.findings.map(f => `via:${f.via}`)), ...origins.map(o => `origin:${o}`), 'review:unreviewed'];
+	for(const k of [...active].filter(k => !keys.includes(k))) {
+		active.delete(k);
+	}
+	shown = r.findings.filter(matches);
 	for(const k of keys) {
 		const [kind, value] = k.split(':');
 		const b = el('button', 'chip', kind === 'class' ? `${cw(value)} calls` : kind === 'via' ? (value === 'package' ? 'inside packages' : 'in the app') : kind === 'review' ? 'not reviewed yet' : `values from ${ow(value)}`);
 		b.type = 'button';
 		b.dataset.key = k;
-		b.setAttribute('aria-pressed', 'false');
+		b.setAttribute('aria-pressed', String(active.has(k)));
 		b.addEventListener('click', () => {
 			if(!active.delete(k)) {
 				active.add(k);
 			}
 			b.setAttribute('aria-pressed', String(active.has(k)));
-			shown = r.findings.filter(f => [...active].every(a => {
-				const [kind, value] = a.split(':');
-				return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : f.origins.includes(value);
-			}));
+			shown = r.findings.filter(matches);
 			drawFindings();
 		});
 		filters.append(b);
@@ -1204,9 +1413,6 @@ function render(r: Report, files: readonly SourceFile[]): void {
 	 * Many findings come in groups: by capability, by called function, or by file. A group is one line that
 	 * says how many findings it holds and of which kind, and unfolds into its rows, ten at a time.
 	 */
-	if(view.target !== r.target || view.count !== r.findings.length) {
-		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > 8 ? 'capability' : 'none', expanded: new Set(), full: new Set() });
-	}
 	let groupBy = view.groupBy;
 	const { expanded, full } = view;
 	const PerGroup = 10;
@@ -1232,13 +1438,13 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		call.append(el('code', '', f.call));
 		const cap = el('td');
 		cap.append(tagLink(f.class, cw(f.class), f.via === 'package' ? Docs.sigdb : Docs.functionInfo,
-			`${sentence(ClassLong[f.class] ?? f.class)}. ${f.via === 'package' ? 'Found inside the package with flowR\'s signature database.' : 'Known from what flowR knows of the function.'}`),
+			`${sentence(ClassLong[f.class] ?? f.class)}. ${f.via === 'package' ? 'Found inside the package with flowR\'s signature database.' : 'From what flowR knows about the function.'}`),
 			` ${f.capability}`, ...(f.tags ?? []).map(t => tagLink('ftag', t, Docs.functionInfo, `flowR's semantic tag ${t} of ${f.via === 'package' ? f.through : f.call}`)));
 		const orig = el('td');
 		orig.append(...f.origins.map(o => tagLink(o, ow(o), Docs.inputSources, `${sentence(OriginLong[o] ?? o)}: ${listing([...new Set(f.inputTypes.map(t => TypeWords[t] ?? t))]) || 'nothing traced'}, found with flowR's input-sources query`)));
 		cap.title = `policy name: ${f.capability}`;
 		const via = el('td', '', f.via === 'package' ? `inside the package (${f.through})` : 'in the app');
-		via.title = f.via === 'package' ? `${f.call} is harmless itself, but calls ${f.through} inside its package (from flowR's signature database)` : `the app calls ${f.call} itself`;
+		via.title = f.via === 'package' ? `${f.call} itself is harmless, but inside its package it calls ${f.through} (from flowR's signature database)` : `the app calls ${f.call} itself`;
 		call.title = `${f.call} ${describe(f)}`;
 		const rv = el('td', 'rv-cell');
 		rv.append(reviewPicker(f, true));
@@ -1334,11 +1540,6 @@ function render(r: Report, files: readonly SourceFile[]): void {
 		}
 	};
 	drawFindings();
-
-	renderCode(r, files);
-	renderLint(r);
-	renderQueries(r);
-	$('result').scrollTop = 0;
 }
 
 /* ---------------------------------------------------------------- the signature database, as the page knows it */
@@ -1387,7 +1588,7 @@ function sigdbSection(fn: string, candidates: readonly string[]): HTMLElement {
 			}
 		}
 		box.replaceChildren(el('p', 'hint', candidates.length > 0
-			? `None of ${listing(candidates.slice(0, 4))}${candidates.length > 4 ? ', …' : ''} exports ${fn} in the data of this page. The page knows the latest CRAN version of each package, and the command line knows every version.`
+			? `None of ${listing(candidates.slice(0, 4))}${candidates.length > 4 ? ', …' : ''} exports ${fn} in the data of this page. This page has the latest CRAN version of each package. The command line has every version.`
 			: `The data of this page has no entry for ${fn}.`));
 	})();
 	return box;
@@ -1397,7 +1598,10 @@ function sigdbSection(fn: string, candidates: readonly string[]): HTMLElement {
 
 interface Mark { from: number, to: number, cls: string, tip: string, open: (at: HTMLElement) => void }
 
-function renderCode(r: Report, files: readonly SourceFile[]): void {
+/** the file the code view shows, kept when the same report is drawn again */
+let codeFile: string | undefined;
+
+function renderCode(r: Report, files: readonly SourceFile[], incremental = false): void {
 	const rFiles = files.filter(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path));
 	const fileOf = (f?: string) => f ?? rFiles[0]?.path ?? '';
 	const count = new Map<string, number>();
@@ -1463,7 +1667,7 @@ function renderCode(r: Report, files: readonly SourceFile[]): void {
 		h.append(el('code', 'fn-name', explicit ? `${explicit}::${fn}` : fn));
 		box.append(h);
 		if(own && !explicit) {
-			box.append(el('p', '', 'A function of the analyzed code itself. flowR follows its body like any other code.'));
+			box.append(el('p', '', 'Defined in the analyzed code. flowR analyzes its body like the rest of the code.'));
 			return;
 		}
 		box.append(sigdbSection(fn, explicit ? [explicit] : attachedPackages(rFiles)));
@@ -1515,9 +1719,11 @@ function renderCode(r: Report, files: readonly SourceFile[]): void {
 		return marks;
 	};
 
-	const showFile = (path: string, line?: number) => {
-		current = path;
-		pop.hidden = true;
+	const showFile = (path: string, line?: number, keep = false) => {
+		current = codeFile = path;
+		if(!keep) {
+			pop.hidden = true;
+		}
 		for(const t of tabs.children) {
 			t.setAttribute('aria-pressed', String((t as HTMLElement).dataset.path === path));
 		}
@@ -1634,7 +1840,13 @@ function renderCode(r: Report, files: readonly SourceFile[]): void {
 		writeLink();
 		openAt(rFiles.length === 1 ? rFiles[0].path : fileOf(x.file), x.loc, lintBox(rule, x), quiet);
 	};
-	if(ordered[0]) {
+	/* drawn again for new linting results: the same file, scrolled as it was, and the details stay open */
+	const again = incremental ? rFiles.find(f => f.path === codeFile) : undefined;
+	if(again) {
+		const top = view.scrollTop;
+		showFile(again.path, undefined, true);
+		view.scrollTop = top;
+	} else if(ordered[0]) {
 		showFile(ordered[0].path);
 	}
 }
@@ -1712,57 +1924,155 @@ function allFixes(r: Report): { patch: string, count: number, files: number } {
 	return { patch, count, files: byFile.size };
 }
 
-/** the flowR steps the report rests on: the request as flowR takes it, its time, and what it gave */
+/** the flowR page of each step badgR runs */
 const QueryDocs: Record<string, string> = {
-	'dataflow':           `${Wiki}Dataflow-Graph`,
-	'input-sources':      `${Wiki}%5BQuery%5D-Input-Sources`,
-	'linter':             `${Wiki}%5BQuery%5D-Linter`,
-	'signature-database': `${Wiki}Signature-Database`
+	'dataflow':           Docs.dataflow,
+	'input-sources':      Docs.inputSources,
+	'linter':             Docs.linter,
+	'function-info':      Docs.functionInfo,
+	'signature-database': Docs.sigdb
 };
-function renderQueries(r: Report): void {
+/** the steps that are flowR queries, which flowR's REPL runs with `:query` */
+const isQuery = (q: FlowrQueryRecord) => q.type !== 'dataflow' && q.type !== 'signature-database';
+const ListWords: Record<string, [string, string]> = { criterion: ['criterion', 'criteria'], rules: ['rule', 'rules'], functions: ['function', 'functions'] };
+const items = (key: string, n: number) => {
+	const [one, many] = ListWords[key] ?? ['item', 'items'];
+	return `${n} ${n === 1 ? one : many}`;
+};
+/** the first list in a request, such as the criteria of input-sources or the rules of the linter */
+function listOf(req: unknown): [string, readonly unknown[]] | undefined {
+	return req !== null && typeof req === 'object' ? Object.entries(req).find((e): e is [string, unknown[]] => Array.isArray(e[1])) : undefined;
+}
+
+/** a request as compact JSON; a long list shows as its length and unfolds on a click */
+function requestView(req: unknown): HTMLElement {
+	let long = false;
+	const short = JSON.stringify(req, (k, v: unknown) => {
+		if(Array.isArray(v) && v.length > 4) {
+			long = true;
+			return `«${items(k, v.length)}»`;
+		}
+		return v;
+	}).replace(/"«([^»]*)»"/g, '[$1]');
+	if(!long) {
+		return el('code', 'q-json', short);
+	}
+	const d = el('details', 'q-req');
+	d.append(el('summary', '', ''));
+	d.firstElementChild?.append(el('code', 'q-json', short));
+	/* the full list only when asked for: it can hold thousands of criteria */
+	d.addEventListener('toggle', () => {
+		if(d.open && d.childElementCount === 1) {
+			d.append(el('code', 'q-json q-full', JSON.stringify(req)));
+		}
+	});
+	return d;
+}
+
+/** the groups of steps the reader opened or folded, kept while the same report is drawn again */
+const queryFolds = new Map<string, boolean>();
+
+function renderQueries(r: Report, incremental = false): void {
+	if(!incremental) {
+		queryFolds.clear();
+	}
 	const qs = r.queries ?? [];
 	const total = qs.reduce((t, q) => t + q.ms, 0);
-	$('query-count').textContent = qs.length > 0 ? `${plural(qs.length, 'step')}, ${(total / 1000).toFixed(1)} s` : '';
+	$('query-count').textContent = qs.length > 0 ? `${plural(qs.length, 'step')}, ${duration(total)}` : '';
 	const box = $('queries');
 	if(qs.length === 0) {
-		box.replaceChildren(el('p', 'hint', 'No flowR steps recorded for this report.'));
+		box.replaceChildren(el('p', 'hint', 'This report has no record of its flowR steps.'));
 		return;
 	}
 	const intro = el('p', 'hint q-intro');
-	const replAll = JSON.stringify(qs.filter(q => q.type !== 'dataflow' && q.type !== 'signature-database').map(q => q.request));
-	intro.append('badgR built this report from these flowR steps. Run the queries yourself in flowR\'s REPL with ',
-		el('code', '', ':query <json>'), ', or open the code in the flowR playground. ',
+	const replAll = JSON.stringify(qs.filter(isQuery).map(q => q.request));
+	intro.append('The flowR steps behind this report. To run a query yourself, use ', el('code', '', ':query <json>'),
+		' in flowR\'s REPL. The ', link(Docs.queryApi, 'Query API'), ' explains each query.',
 		copyButton('copy all queries', () => replAll, 'all queries as one JSON array, for :query in flowR\'s REPL'));
 	const table = el('table', 'queries');
 	const head = el('tr');
-	head.append(...['step', 'request', 'took', 'result', ''].map(h => el('th', '', h)));
+	head.append(...['step', 'request', 'time', 'result', ''].map(h => el('th', '', h)));
 	const thead = el('thead');
 	thead.append(head);
-	const tbody = el('tbody');
-	for(const q of qs) {
-		const tr = el('tr');
-		const type = el('td');
-		type.append(link(QueryDocs[q.type] ?? `${Wiki}Query-API`, q.type, `flowR's documentation of ${q.type}`));
-		/* long criterion lists are shortened on the page, the copy has them all */
-		const shown = JSON.stringify(q.request, (k, v) => Array.isArray(v) && v.length > 4 ? [...v.slice(0, 3), `… ${v.length - 3} more`] : v);
-		const req = el('td');
-		req.append(el('code', 'q-json', shown));
-		const copy = el('td');
-		if(q.type !== 'dataflow' && q.type !== 'signature-database') {
+	table.append(thead);
+	const docsOfRule = (rule: unknown) => r.lint.find(l => l.rule === rule)?.docs ?? vocabulary?.lintRules.find(v => v.name === rule)?.docs;
+	const row = (q: FlowrQueryRecord, member: boolean) => {
+		const tr = el('tr', member ? 'q-member' : '');
+		const type = el('td', 'q-type');
+		type.append(link(QueryDocs[q.type] ?? Docs.queryApi, q.type, `flowR's documentation of ${q.type}`));
+		/* a linting rule links its own page */
+		const rules = q.type === 'linter' ? listOf(q.request)?.[1] ?? [] : [];
+		if(rules.length === 1 && docsOfRule(rules[0])) {
+			type.append(' ', link(docsOfRule(rules[0]) as string, '↗', `the rule ${String(rules[0])}`));
+		}
+		const req = el('td', 'q-request');
+		req.append(requestView(q.request));
+		const copy = el('td', 'q-copy');
+		if(isQuery(q)) {
 			copy.append(copyButton('copy', () => `:query ${JSON.stringify([q.request])}`, 'this query as a command for flowR\'s REPL'));
 		}
-		tr.append(type, req, el('td', 'mono', `${q.ms} ms`), el('td', '', q.result), copy);
-		tbody.append(tr);
+		tr.append(type, req, el('td', 'mono q-ms', duration(q.ms)), el('td', 'q-result', q.result), copy);
+		return tr;
+	};
+	/* steps of one type in one group: the input-sources query runs in batches, the linter once per rule */
+	const groups = new Map<string, FlowrQueryRecord[]>();
+	for(const q of qs) {
+		groups.set(q.type, [...groups.get(q.type) ?? [], q]);
 	}
-	table.append(thead, tbody);
+	for(const [type, group] of groups) {
+		const tbody = el('tbody', group.length > 1 ? 'q-group' : '');
+		tbody.dataset.type = type;
+		if(group.length === 1) {
+			tbody.append(row(group[0], false));
+			table.append(tbody);
+			continue;
+		}
+		const lists = group.map(q => listOf(q.request));
+		const key = lists.find(l => l !== undefined)?.[0];
+		const count = lists.reduce((n, l) => n + (l?.[1].length ?? 0), 0);
+		const what = type === 'linter' ? `${plural(group.length, 'rule')}, one query each`
+			: key ? `${items(key, count)} in ${group.length} batches` : plural(group.length, 'request');
+		const gh = el('tr', 'q-head');
+		const t = el('td', 'q-type');
+		const toggle = el('button', 'q-toggle', '');
+		toggle.type = 'button';
+		t.append(toggle, link(QueryDocs[type] ?? Docs.queryApi, type, `flowR's documentation of ${type}`), el('span', 'hint', ` ×${group.length}`));
+		const copy = el('td', 'q-copy');
+		if(isQuery(group[0])) {
+			copy.append(copyButton('copy', () => `:query ${JSON.stringify(group.map(q => q.request))}`, `the ${group.length} ${type} queries as one command for flowR's REPL`));
+		}
+		gh.append(t, el('td', 'q-request hint', what), el('td', 'mono q-ms', duration(group.reduce((n, q) => n + q.ms, 0))), el('td', 'q-result hint', ''), copy);
+		const members = group.map(q => row(q, true));
+		/* a few steps show at once, many fold */
+		const set = (o: boolean) => {
+			tbody.classList.toggle('open', o);
+			toggle.textContent = o ? '▾' : '▸';
+			toggle.setAttribute('aria-expanded', String(o));
+			toggle.title = o ? 'fold' : `show the ${group.length} steps`;
+			members.forEach(m => m.hidden = !o);
+		};
+		set(queryFolds.get(type) ?? group.length <= 3);
+		gh.addEventListener('click', ev => {
+			if(!(ev.target as Element).closest('a, .q-copy')) {
+				set(!tbody.classList.contains('open'));
+				queryFolds.set(type, tbody.classList.contains('open'));
+			}
+		});
+		tbody.append(gh, ...members);
+		table.append(tbody);
+	}
 	const wrap = el('div', 'table-wrap');
 	wrap.append(table);
 	box.replaceChildren(intro, wrap);
 }
 
-function renderLint(r: Report): void {
+function renderLint(r: Report, incremental = false): void {
+	const pending = r.pending ?? [];
 	const clean = r.lint.filter(l => !l.error && l.count === 0);
-	$('lint-count').textContent = `${r.lint.length - clean.length} of ${r.lint.length} report something`;
+	const hits = r.lint.length - clean.length;
+	$('lint-count').textContent = pending.length > 0
+		? `${r.lint.length} of ${r.lint.length + pending.length} done, ${hits} report something`
+		: `${hits} of ${r.lint.length} report something`;
 	const fixes = allFixes(r);
 	const bar = el('div', 'fixes-bar');
 	if(fixes.count > 0) {
@@ -1770,7 +2080,7 @@ function renderLint(r: Report): void {
 		if(last?.fromEditor && last.files.length === 1) {
 			const apply = el('button', 'button small', 'apply all');
 			apply.type = 'button';
-			apply.title = 'apply every fix to the code in the editor and analyze again';
+			apply.title = 'apply all fixes to the code in the editor and analyze it again';
 			apply.addEventListener('click', () => {
 				const src = last?.files[0];
 				if(src) {
@@ -1780,35 +2090,59 @@ function renderLint(r: Report): void {
 			bar.append(apply);
 		}
 		bar.append(copyButton('copy patch', () => fixes.patch, 'the fixes as a unified diff, for git apply or patch -p1'),
-			download('fixes.patch', 'text/x-diff', fixes.patch));
+			download('fixes.patch', 'text/x-diff', () => fixes.patch));
 		const d = el('details', 'patch-view');
+		d.dataset.key = '\u0000patch';
 		d.append(el('summary', '', 'show the patch'), diffView(fixes.patch, true));
 		bar.append(d);
 	}
-	/* nothing to see: the section starts folded */
-	($('lint').closest('details') as HTMLDetailsElement).open = clean.length < r.lint.length;
+	/* nothing to see: the section starts folded; a redraw of the same report leaves it as the reader set it */
+	if(!incremental) {
+		($('lint').closest('details') as HTMLDetailsElement).open = clean.length < r.lint.length || pending.length > 0;
+	}
 	const cleanRow = el('div', 'lint clean');
-	cleanRow.append(el('span', 'mark', '✓'), el('span', 'hint', `${clean.length === r.lint.length ? 'All rules' : plural(clean.length, 'rule')} found nothing: `));
+	const allClean = clean.length === r.lint.length && pending.length === 0;
+	cleanRow.append(el('span', 'mark', '✓'), el('span', 'hint', `${allClean ? `All ${plural(clean.length, 'rule')}` : plural(clean.length, 'rule')} found nothing: `));
 	clean.forEach((l, i) => {
-		const a = link(l.docs ?? Docs.linter, l.rule, l.about ?? l.title);
+		const a = link(l.docs ?? Docs.lintOverview, l.rule, l.about ?? l.title);
 		a.className = 'rule';
 		cleanRow.append(...(i > 0 ? [' '] : []), a);
 	});
-	/* which query ran, and which tiers need which rule */
+	/* which query runs, and which tiers need which rule */
 	const intro = el('p', 'lint-intro hint');
 	const needs = (policy?.tiers ?? []).filter(t => t.lint.length > 0).map(t => `${t.name} needs ${listing(t.lint)}`);
-	intro.append('badgR asks flowR\'s ', link(Docs.linter, 'linter query'), ` for these ${plural(r.lint.length, 'rule')}${needs.length > 0 ? `. ${sentence(listing(needs))} to report nothing` : ''}, and shows the others as advice.`);
+	intro.append('badgR runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '.',
+		needs.length > 0 ? ` ${sentence(listing(needs))} to report nothing. The other rules are advice and do not change the tier.` : ' They are advice and do not change the tier.');
+	/* the rules not done yet, each with what it checks; they run one after the other, in this order */
+	const waiting = pending.map((rule, i) => {
+		const v = vocabulary?.lintRules.find(x => x.name === rule);
+		const row = el('div', 'lint pending');
+		const name = link(v?.docs ?? Docs.lintOverview, rule, v?.about ?? v?.title);
+		name.className = 'rule';
+		row.append(el('span', i === 0 ? 'mark spin' : 'mark', i === 0 ? '' : '·'), name, el('span', 'hint', i === 0 ? 'running' : 'waiting'));
+		return row;
+	});
 	$('lint').replaceChildren(intro, ...(fixes.count > 0 ? [bar] : []), ...r.lint.filter(l => !clean.includes(l)).map(l => {
 		const state = l.error ? 'failed' : l.count > 0 ? 'hits' : 'clean';
-		const name = link(l.docs ?? 'https://github.com/flowr-analysis/flowr/wiki/Linter', l.rule, l.about ?? l.title);
+		const name = link(l.docs ?? Docs.lintOverview, l.rule, l.about ?? l.title);
 		name.className = 'rule';
-		const text = l.error ? `failed: ${l.error}` : l.count > 0 ? plural(l.count, 'result') : 'no results';
+		const stopped = l.error === undefined ? undefined : /^stopped after (\S+) ?s\b/.exec(l.error)?.[1];
+		const text = stopped !== undefined ? `stopped: took longer than ${stopped} s (lintTimeout in the policy)`
+			: l.error ? `failed: ${l.error}` : l.count > 0 ? plural(l.count, 'result') : 'no results';
+		if(stopped !== undefined) {
+			const row = el('div', 'lint stopped');
+			row.dataset.key = l.rule;
+			row.title = l.error ?? '';
+			row.append(el('span', 'mark', '⏱'), name, el('span', 'lint-count', text));
+			return row;
+		}
 		if(state === 'clean') {
 			const row = el('div', 'lint clean');
 			row.append(el('span', 'mark', '✓'), name, el('span', 'hint', text));
 			return row;
 		}
 		const d = el('details', `lint ${state}`);
+		d.dataset.key = l.rule;
 		d.open = state === 'hits' && l.count <= 5;
 		const s = el('summary');
 		s.append(el('span', 'mark', '✗'), name, el('span', 'lint-count', text));
@@ -1828,9 +2162,12 @@ function renderLint(r: Report): void {
 			}
 			ul.append(item);
 		}
+		if(l.results.length > 200) {
+			ul.append(el('li', 'hint', `${l.results.length - 200} more in report.json`));
+		}
 		d.append(ul);
 		return d;
-	}), ...(clean.length > 0 ? [cleanRow] : []));
+	}), ...(clean.length > 0 ? [cleanRow] : []), ...waiting);
 }
 
 /* ---------------------------------------------------------------- the badges of the policy */
@@ -1841,7 +2178,7 @@ function drawTierTable(): void {
 	}
 	const p = policy;
 	const all = [...p.tiers.map(t => ({ ...t, fallback: false })),
-		{ name: p.fallbackTier.name, color: p.fallbackTier.color, review: p.fallbackTier.review, summary: 'Misses every tier above, or flowR cannot analyze it.', description: undefined, forbid: [], lint: [] as readonly string[], fallback: true }];
+		{ name: p.fallbackTier.name, color: p.fallbackTier.color, review: p.fallbackTier.review, summary: 'Fits no tier above, or flowR could not analyze the code.', description: undefined, forbid: [], lint: [] as readonly string[], fallback: true }];
 	/* one line per tier, the details unfold on demand */
 	$('tier-table').replaceChildren(...all.map(t => {
 		const li = el('li');
@@ -1858,10 +2195,10 @@ function drawTierTable(): void {
 		}
 		if(t.forbid.length > 0 || t.lint.length > 0) {
 			const rules = el('ul');
-			rules.append(...t.forbid.map(f => el('li', '', `It fails on ${f.reason ?? 'a forbidden finding'}.`)));
+			rules.append(...t.forbid.map(f => el('li', '', `Fails on ${f.reason ?? 'a forbidden finding'}.`)));
 			if(t.lint.length > 0) {
 				const item = el('li');
-				item.append('It fails when one of these flowR linting rules reports a result: ');
+				item.append('Fails if one of these flowR linting rules reports something: ');
 				t.lint.forEach((x, i) => {
 					const v = vocabulary?.lintRules.find(r => r.name === x);
 					const a = link(v?.docs ?? Docs.linter, x, v?.about);
@@ -1874,7 +2211,7 @@ function drawTierTable(): void {
 			body.append(rules);
 		}
 		const review = el('p');
-		review.append(el('strong', '', 'Review left: '), t.review === 'full' ? 'everything.' : `${t.review}.`);
+		review.append(el('strong', '', 'Left to review: '), t.review === 'full' ? 'all findings.' : `${t.review}.`);
 		body.append(review);
 		if(!t.fallback) {
 			const how = el('p', 'hint');
@@ -1972,7 +2309,7 @@ function openLink(): void {
 		const kind = describeUrl(url)?.kind;
 		if(kind === 'playground' || kind === 'own') {
 			/* the code is in the link itself, so nothing is fetched and it is analyzed at once */
-			showShared(tier, n, 'Analyzing the code of the link again…');
+			showShared(tier, n, 'Analyzing the code from the link…');
 			$<HTMLFormElement>('url-form').requestSubmit();
 		} else {
 			/* fetching from another site waits for a click; the link's result shows until then */
@@ -1981,7 +2318,7 @@ function openLink(): void {
 	} else if(code !== undefined) {
 		setText(codeView, code);
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
-		showShared(tier, n, 'Analyzing the code of the link again…');
+		showShared(tier, n, 'Analyzing the code from the link…');
 		/* the code is analyzed here, without any request, so the link's result comes back at once */
 		runEditor(reselect);
 	}
@@ -1997,7 +2334,7 @@ function showShared(tier: string | undefined, n: string | null, note: string, ac
 	img.alt = `badgR: ${tier}`;
 	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(tier, t.color))}`;
 	const p = el('p');
-	p.append(`This link was shared with the tier ${tier}${n !== null ? ` and ${plural(Number(n), 'finding')}` : ''}. ${note}`);
+	p.append(`This link was shared with tier ${tier}${n !== null ? ` and ${plural(Number(n), 'finding')}` : ''}. ${note}`);
 	box.replaceChildren(img, p);
 	if(act) {
 		const b = el('button', 'button', 'Fetch and analyze');

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parsePolicy, NoOrigin, type ForbidRule } from '../src/policy-core';
+import { parsePolicy, DefaultLintTimeout, NoOrigin, type ForbidRule } from '../src/policy-core';
 import { matchesRule, type Finding } from '../src/tiers';
 import { gridOf, rulesOf, shapeOf } from '../web/policy-visual';
 
@@ -43,5 +43,23 @@ describe('the policy grid', () => {
 			grid.set(`${c}|${NoOrigin}`, 'any');
 		}
 		expect(rulesOf(grid, shape, [])).toEqual([{ classes: ['outward'], origins: [NoOrigin], reason: expect.any(String) }]);
+	});
+});
+
+describe('the time limit of a linting rule', () => {
+	const text = fs.readFileSync(path.join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8');
+	const withLimit = (line: string) => text.replace(/^lintTimeout:.*$/m, line);
+
+	test('is read from the policy', () => {
+		expect(policy.lintTimeout).toBe(120);
+		expect(parsePolicy(withLimit('lintTimeout: 5'), 'p.yaml', '').lintTimeout).toBe(5);
+	});
+
+	test('defaults when the policy names none', () => {
+		expect(parsePolicy(withLimit(''), 'p.yaml', '').lintTimeout).toBe(DefaultLintTimeout);
+	});
+
+	test.each(['0', '-3', 'soon', '.inf', '9999999'])('rejects %s', v => {
+		expect(() => parsePolicy(withLimit(`lintTimeout: ${v}`), 'p.yaml', '')).toThrow(/lintTimeout/);
 	});
 });

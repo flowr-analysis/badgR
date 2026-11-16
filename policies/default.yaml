@@ -76,6 +76,10 @@ report:
   - unescaped-arguments
   - network-functions
 
+# seconds one linting rule may run; a rule that takes longer is stopped and counts
+# as not run, so no tier that needs it is reached
+lintTimeout: 120
+
 # strictest first
 tiers:
   - name: gold

@@ -17,23 +17,23 @@
   <a class="brand" href="./"><img src="badgr-icon.svg" alt="" width="30" height="35">badgR</a>
   <span class="tagline">security tiers for R code, using flowR's static analysis</span>
 <div class="local" role="note">
-  <strong>Local.</strong> Your code is analyzed in this browser and never sent anywhere.
-  <details class="how"><summary>How we know</summary>
+  <strong>Runs locally.</strong> Your code is analyzed in this browser and is never uploaded.
+  <details class="how"><summary>How to check</summary>
     <div class="how-body">
       <p>flowR, compiled to JavaScript and WebAssembly, runs in a web worker of this page. The page makes only these requests:</p>
       <ul>
         <li>its own files: the page, its scripts, and the two WebAssembly parsers,</li>
         <li>the data of each R package your code loads, from <code>pkgs/&lt;package&gt;.json</code> on this site, so the request names the package but carries none of your code,</li>
-        <li>and only when you ask for it, the GitHub repository or URL you enter. Those requests download and never send anything.</li>
+        <li>and only when you ask for it, the GitHub repository or URL you enter. These requests only download.</li>
       </ul>
-      <p>The page's content security policy, which the browser enforces, allows scripts only from this site and
-        forbids form submissions. Uploaded files are read in the browser
-        with the File API, and downloads of reports are created in the browser as well.</p>
+      <p>The page's content security policy, enforced by the browser, allows scripts only from this site and
+        blocks form submissions. Uploaded files are read in the browser
+        with the File API, and report downloads are made in the browser too.</p>
       <p>The test suite (<code>test/web.test.ts</code>) opens this page in headless Chromium, analyzes uploads, pasted
         code, and a GitHub repository, and records every request. It fails when a request goes to any host but
-        this site and the GitHub hosts of the requested repository, uses another method than <code>GET</code>, or carries a body.</p>
+        this site and the GitHub hosts of the requested repository, uses a method other than <code>GET</code>, or has a body.</p>
       <p>To check it yourself, open the network tab of your browser's developer tools while you analyze, or go
-        offline once the page has loaded and analyze an upload.</p>
+        offline after the page has loaded and analyze an upload.</p>
     </div>
   </details>
 </div>
@@ -66,7 +66,7 @@
       <div id="code" class="editor"></div>
       <div class="row">
         <button class="button" id="analyze-code" title="Ctrl+Enter">Analyze</button>
-        <button type="button" class="button secondary toggle" id="live" aria-pressed="false" title="analyze again shortly after each edit">Live</button>
+        <button type="button" class="button secondary toggle" id="live" aria-pressed="false" title="analyze again after each edit">Live</button>
         <span id="code-status" class="hint"></span>
       </div>
     </div>
@@ -89,7 +89,7 @@
         <button type="submit" class="button">Fetch</button>
       </form>
       <p class="hint" id="url-note" aria-live="polite"></p>
-      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages (from their mirror on GitHub), and links to the flowR playground or to this page, whose code travels in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow downloads from other sites (CORS).</p>
+      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages (from their GitHub mirror), and links to the flowR playground or to this page, which carry the code in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow cross-site downloads (CORS).</p>
     </div>
 
     <div class="panel" data-panel="policy" hidden>
@@ -103,7 +103,7 @@
       </div>
       <div id="policy-visual"></div>
       <div id="policy" class="editor tall" hidden></div>
-      <p class="hint">Tier changes apply at once. Changes to where values come from, to what a call can do, or to the linting rules need a new analysis.</p>
+      <p class="hint">Changes to the tiers apply right away. Changes to value sources, capabilities, or linting rules need a new analysis.</p>
     </div>
 
     <details class="badges-box">
@@ -122,10 +122,10 @@
 
     <div id="shared" class="shared" hidden></div>
 
-    <div id="progress" hidden aria-live="polite">
+    <div id="progress" hidden>
       <div class="steps" id="steps"></div>
-      <div class="bar-track"><div id="bar-fill"></div></div>
-      <p id="progress-text" class="hint"></p>
+      <div class="bar-row"><div class="bar-track"><div id="bar-fill"></div></div><span id="progress-count" class="mono"></span></div>
+      <p class="progress-line hint"><span id="progress-text" aria-live="polite"></span><span id="progress-clock" class="mono"></span></p>
     </div>
 
     <div id="error" class="error" hidden role="alert"></div>
@@ -137,9 +137,10 @@
           <h2 id="verdict-title"></h2>
         </div>
         <p id="verdict-req" class="requirement"></p>
+        <p id="verdict-pending" class="pending-note" hidden></p>
         <div id="summary" class="summary"></div>
         <div class="actions" id="downloads"></div>
-        <details class="all" id="all-results"><summary>All results in sentences</summary><div id="all-body"></div></details>
+        <details class="all" id="all-results"><summary>All results as text</summary><div id="all-body"></div></details>
         <p id="verdict-meta" class="meta"></p>
       </div>
 
@@ -149,7 +150,7 @@
           <ol class="ladder" id="ladder"></ol>
         </details>
         <details open>
-          <summary><h3>Risky calls × where their values come from</h3></summary>
+          <summary><h3>Risky calls by value source</h3></summary>
           <div class="table-wrap"><table class="matrix" id="matrix"></table></div>
         </details>
       </div>

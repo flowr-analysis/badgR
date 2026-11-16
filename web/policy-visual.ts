@@ -406,6 +406,25 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	rrow.append(picker('+ rule', (vocabulary?.lintRules ?? []).filter(r => !policy.report.includes(r.name)).map(r => ({ value: r.name, title: r.about })),
 		v => edit(d => d.set('report', flowed(d, [...policy.report, v])))));
 	rg.append(rrow);
+	/* the time limit of each linting rule */
+	const lt = el('label', 'vrow');
+	lt.append(el('span', 'vlabel', 'Time limit per rule'));
+	const secs = el('input');
+	secs.type = 'number';
+	secs.min = '1';
+	secs.step = '1';
+	secs.value = String(policy.lintTimeout);
+	secs.className = 'vnumber';
+	secs.addEventListener('change', () => {
+		const v = Number(secs.value);
+		if(Number.isFinite(v) && v > 0) {
+			edit(d => d.set('lintTimeout', v));
+		} else {
+			secs.value = String(policy.lintTimeout);
+		}
+	});
+	lt.append(secs, el('span', 'hint', 'seconds (lintTimeout). A rule that takes longer is stopped and reported as stopped.'));
+	rg.append(lt);
 
 	settings.append(og, cg, tg, rg);
 	root.replaceChildren(legend, ...tiers, settings);

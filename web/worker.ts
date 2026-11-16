@@ -12,19 +12,20 @@ import { flowrVersion } from '@eagleoutice/flowr/util/version';
 import { log, LogLevelNames } from '@eagleoutice/flowr/util/log';
 import treeSitterWasm from 'web-tree-sitter/tree-sitter.wasm';
 import rWasm from '@davisvaughan/tree-sitter-r/tree-sitter-r.wasm';
-import { BaseRPackages, ruleDocs, type Progress, type Report, analyzeWith, finishReport } from '../src/core';
+import { BaseRPackages, RFilePattern, ruleDocs, lintRule, lintInWorkers, type LintMessage, type Progress, type Report, analyzeWith, finishReport } from '../src/core';
+import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
 import { parsePolicy } from '../src/policy-core';
 import { ArgProp, CallProp, SemanticCallTag } from '@eagleoutice/flowr/dataflow/environments/built-in-props';
 import { InputType } from '@eagleoutice/flowr/queries/catalog/input-sources-query/input-types';
 import { LintingRules } from '@eagleoutice/flowr/linter/linter-rules';
-import type { PolicyVocabulary, WorkerRequest, WorkerResponse } from './protocol';
+import type { LintPackage, PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
 import { packagesNamed } from './packages';
 
 declare const BADGR_VERSION: string;
 
 interface WebPackage { v?: string, x: string[], c: Record<string, string[]> }
 
-const post = (m: WorkerResponse) => (self as unknown as Worker).postMessage(m);
+const post = (m: WorkerResponse | LintMessage) => (self as unknown as Worker).postMessage(m);
 const packageCache = new Map<string, Promise<WebPackage | undefined>>();
 let packageIndex: Promise<{ sigdb?: string, packages: Record<string, string> } | undefined> | undefined;
 
@@ -59,9 +60,14 @@ function vocabulary(): PolicyVocabulary {
 	};
 }
 
+/** about how long building the dataflow graph takes per line of R code in a browser, measured on a project of 8000 lines */
+const MsPerLine = 1.5;
+
 async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Report> {
 	const start = Date.now();
-	const progress = (p: Progress) => post({ type: 'progress', id: req.id, progress: p });
+	/* flowR reports nothing while it builds the dataflow graph: estimate that step from the lines of code */
+	const lines = req.files.filter(f => RFilePattern.test(f.path)).reduce((n, f) => n + f.content.split('\n').length, 0);
+	const progress = (p: Progress) => post({ type: 'progress', id: req.id, progress: p.phase === 'dataflow' && p.etaMs === undefined ? { ...p, etaMs: lines * MsPerLine } : p });
 	log.updateSettings(s => {
 		s.settings.minLevel = LogLevelNames.fatal;
 	});
@@ -99,26 +105,60 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 		}));
 		await treeSitterReady;
 
-		const source = new MemorySignatureSource(Object.fromEntries([...loaded].map(([name, p]) => [name, { version: p.v, exported: p.x as never[] }])));
-		const analyzer = await new FlowrAnalyzerBuilder()
-			.setParser(new TreeSitterExecutor())
-			.unregisterPlugins(SigDbPluginName)
-			.registerPlugins(new FlowrAnalyzerPackageVersionsSigDbPlugin(source))
-			.build();
-		analyzer.addFile(...req.files.map(f => new FlowrInlineTextFile(f.path, f.content)));
-		analyzer.addRequest(...rFiles.map(f => ({ request: 'file' as const, content: f.path })));
+		const packages = [...loaded].map(([name, p]) => ({ name, v: p.v, x: p.x }));
+		const analyzer = await buildAnalyzer(req.files, packages);
+		lint = lintWorkers(req.files, packages, policy.lintTimeout);
 		const result = await analyzeWith(analyzer, policy, (pkg, fn) => {
 			const p = loaded.get(pkg);
 			if(p === undefined || !p.x.includes(fn)) {
 				return undefined;
 			}
 			return p.c[fn] ?? [];
-		}, progress);
+		}, progress, partial => post({ type: 'partial', id: req.id, report: finishReport(policy, base, start, partial) }), lint?.runner);
 		return finishReport(policy, base, start, result);
 	} catch(e) {
 		return finishReport(policy, base, start, { error: e instanceof Error ? e.message : String(e) });
+	} finally {
+		lint?.stop();
 	}
 }
+
+async function buildAnalyzer(files: readonly SourceFile[], packages: readonly LintPackage[]): Promise<FlowrAnalyzer> {
+	const source = new MemorySignatureSource(Object.fromEntries(packages.map(p => [p.name, { version: p.v, exported: p.x as never[] }])));
+	const analyzer = await new FlowrAnalyzerBuilder()
+		.setParser(new TreeSitterExecutor())
+		.unregisterPlugins(SigDbPluginName)
+		.registerPlugins(new FlowrAnalyzerPackageVersionsSigDbPlugin(source))
+		.build();
+	analyzer.addFile(...files.map(f => new FlowrInlineTextFile(f.path, f.content)));
+	analyzer.addRequest(...files.filter(f => RFilePattern.test(f.path)).map(f => ({ request: 'file' as const, content: f.path })));
+	return analyzer;
+}
+
+/** the linting rules run in workers of their own, next to the rest of the analysis, see {@link lintInWorkers} */
+function lintWorkers(files: readonly SourceFile[], packages: readonly LintPackage[], limitSeconds: number): ReturnType<typeof lintInWorkers> | undefined {
+	if(typeof Worker === 'undefined') {
+		return undefined;
+	}
+	return lintInWorkers(() => {
+		const w = new Worker(self.location.href);
+		w.postMessage({ type: 'lint-init', files, packages } satisfies WorkerRequest);
+		return {
+			next: () => new Promise<LintMessage>(resolve => {
+				w.onmessage = (ev: MessageEvent<LintMessage>) => resolve(ev.data);
+				w.onerror = ev => {
+					ev.preventDefault();
+					resolve({ type: 'lint-failed', error: ev.message || 'the linting worker failed' });
+				};
+			}),
+			run:       rule => w.postMessage({ type: 'lint-rule', rule } satisfies WorkerRequest),
+			terminate: () => w.terminate()
+		};
+	}, limitSeconds);
+}
+
+let lint: ReturnType<typeof lintWorkers>;
+let lintAnalyzer: Promise<FlowrAnalyzer> | undefined;
 
 self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
 	const req = ev.data;
@@ -131,6 +171,18 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
 				void loadPackage(req.base, name);
 			}
 		});
+	} else if(req.type === 'lint-init') {
+		treeSitterReady ??= TreeSitterExecutor.initTreeSitter(undefined, rWasm, treeSitterWasm);
+		log.updateSettings(s => {
+			s.settings.minLevel = LogLevelNames.fatal;
+		});
+		lintAnalyzer = treeSitterReady.then(() => buildAnalyzer(req.files, req.packages)).then(async a => {
+			await a.dataflow();
+			return a;
+		});
+		lintAnalyzer.then(() => post({ type: 'lint-ready' }), e => post({ type: 'lint-failed', error: e instanceof Error ? e.message : String(e) }));
+	} else if(req.type === 'lint-rule') {
+		void lintAnalyzer?.then(a => lintRule(a, req.rule)).then(r => post({ type: 'lint-done', ...r }));
 	} else if(req.type === 'analyze') {
 		run(req).then(
 			report => post({ type: 'report', id: req.id, report }),
