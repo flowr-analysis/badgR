@@ -39,23 +39,50 @@ function escapeXml(s: string): string {
 function textWidth(s: string): number {
 	let w = 0;
 	for(const c of s) {
-		w += /[il.,:;|!'1]/.test(c) ? 3.5 : /[mwMW]/.test(c) ? 10 : /[A-Z]/.test(c) ? 8 : 6.6;
+		w += /[il.,:;|!'1*]/.test(c) ? 3.5 : /[mwMW]/.test(c) ? 10 : /[A-Z]/.test(c) ? 8 : 6.6;
 	}
 	return Math.ceil(w);
 }
 
-/** a shields.io style badge: the badger and `badgR` on the left, the tier in its color on the right */
-export function badgeSvg(tier: string, color: string, label = 'badgR'): string {
+/** what a badge says besides the tier */
+export interface BadgeMarks {
+	/** the left text, `badgR` by default */
+	readonly label?:    string
+	/** checked against another policy than badgR's default: the tier gets a `*` */
+	readonly custom?:   boolean
+	/** every finding was reviewed and none is left to fix: the tier gets a check mark */
+	readonly reviewed?: boolean
+}
+
+/** what the marks of a badge mean, for its title and for screen readers */
+export function badgeTitle(tier: string, marks: BadgeMarks = {}): string {
+	return [`${marks.label ?? 'badgR'}: ${tier}`, marks.custom ? 'custom policy' : undefined, marks.reviewed ? 'all findings reviewed' : undefined].filter(Boolean).join(', ');
+}
+
+/**
+ * A shields.io style badge: the badger and `badgR` on the left, the tier in its color on the right; a
+ * custom policy adds `*` to the tier, a complete review a check mark.
+ */
+export function badgeSvg(tier: string, color: string, marks: BadgeMarks = {}): string {
+	const label = marks.label ?? 'badgR';
+	const shown = `${tier}${marks.custom ? '*' : ''}`;
 	const icon = 15;
+	const check = marks.reviewed ? 12 : 0;
 	const lw = 5 + icon + 4 + textWidth(label) + 6;
-	const rw = 8 + textWidth(tier) + 8;
+	const rw = 8 + textWidth(shown) + check + 8;
 	const w = lw + rw;
-	const t = escapeXml(tier);
+	const t = escapeXml(shown);
 	const l = escapeXml(label);
+	const title = escapeXml(badgeTitle(tier, marks));
 	/* ids of their own, so several badges can share one page */
-	const id = `badgr-${tier.replace(/[^\w-]/g, '')}`;
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="20" role="img" aria-label="${l}: ${t}">
-  <title>${l}: ${t}</title>
+	const id = `badgr-${tier.replace(/[^\w-]/g, '')}${marks.custom ? '-c' : ''}${marks.reviewed ? '-r' : ''}`;
+	const tx = lw + 8 + textWidth(shown) / 2;
+	/* the check mark is drawn, not a glyph, so it looks the same in every font */
+	const mark = marks.reviewed
+		? `\n  <path d="M${lw + 8 + textWidth(shown) + 3} 10.5 l2.6 2.8 l5 -6" fill="none" stroke="#010101" stroke-opacity=".3" stroke-width="2" transform="translate(0 1)"/>\n  <path d="M${lw + 8 + textWidth(shown) + 3} 10.5 l2.6 2.8 l5 -6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
+		: '';
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="20" role="img" aria-label="${title}">
+  <title>${title}</title>
   <linearGradient id="${id}-s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
   <clipPath id="${id}-r"><rect width="${w}" height="20" rx="3" fill="#fff"/></clipPath>
   <g clip-path="url(#${id}-r)">
@@ -67,9 +94,9 @@ export function badgeSvg(tier: string, color: string, label = 'badgR'): string {
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
     <text x="${5 + icon + 4 + textWidth(label) / 2}" y="15" fill="#010101" fill-opacity=".3" textLength="${textWidth(label)}">${l}</text>
     <text x="${5 + icon + 4 + textWidth(label) / 2}" y="14" textLength="${textWidth(label)}">${l}</text>
-    <text x="${lw + rw / 2}" y="15" fill="#010101" fill-opacity=".3" textLength="${textWidth(tier)}">${t}</text>
-    <text x="${lw + rw / 2}" y="14" textLength="${textWidth(tier)}">${t}</text>
-  </g>
+    <text x="${tx}" y="15" fill="#010101" fill-opacity=".3" textLength="${textWidth(shown)}">${t}</text>
+    <text x="${tx}" y="14" textLength="${textWidth(shown)}">${t}</text>
+  </g>${mark}
 </svg>
 `;
 }

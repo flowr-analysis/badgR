@@ -5,9 +5,10 @@ import { fileProtocol } from '@eagleoutice/flowr/r-bridge/retriever';
 import { flowrVersion } from '@eagleoutice/flowr/util/version';
 import { log, LogLevelNames } from '@eagleoutice/flowr/util/log';
 import type { Policy } from './policy-core';
+import { defaultPolicyHash } from './policy';
 import { Worker } from 'node:worker_threads';
 import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
-import { type LintMessage, type ProgressListener, type Report, RFilePattern, analyzeWith, finishReport, lintInWorkers } from './core';
+import { type LintMessage, type ProgressListener, type Report, MetaFilePattern, RFilePattern, analyzeWith, finishReport, lintInWorkers } from './core';
 import { sigDbStatus } from './sigdb';
 
 export { type Report, type Progress, type ProgressListener, BaseRPackages, RFilePattern } from './core';
@@ -21,7 +22,10 @@ export function toolVersion(): string {
 	return 'unknown';
 }
 
-/** all R files of a file or folder, skipping package libraries (`renv`, `packrat`, `rv/library`) and hidden folders */
+/**
+ * All R files of a file or folder, with a package's DESCRIPTION and NAMESPACE, skipping package libraries
+ * (`renv`, `packrat`, `rv/library`) and hidden files and folders except `.Rprofile`.
+ */
 export function collectFiles(target: string): string[] {
 	const stat = fs.statSync(target);
 	if(stat.isFile()) {
@@ -30,7 +34,7 @@ export function collectFiles(target: string): string[] {
 	const out: string[] = [];
 	const walk = (dir: string) => {
 		for(const e of fs.readdirSync(dir, { withFileTypes: true })) {
-			if(e.name.startsWith('.') || e.name === 'renv' || e.name === 'node_modules' || e.name === 'packrat') {
+			if((e.name.startsWith('.') && e.name !== '.Rprofile') || e.name === 'renv' || e.name === 'node_modules' || e.name === 'packrat') {
 				continue;
 			}
 			const p = path.join(dir, e.name);
@@ -40,7 +44,7 @@ export function collectFiles(target: string): string[] {
 			}
 			if(e.isDirectory()) {
 				walk(p);
-			} else if(RFilePattern.test(e.name)) {
+			} else if(RFilePattern.test(e.name) || MetaFilePattern.test(e.name)) {
 				out.push(path.resolve(p));
 			}
 		}
@@ -72,7 +76,7 @@ export async function analyze(target: string, policy: Policy, opts: AnalyzeOptio
 		toolVersion:  toolVersion(),
 		flowrVersion: String(flowrVersion()),
 		sigdb:        { tag: sig.tag, present: sig.present, scope: 'full (base R and all of CRAN)' },
-		policy:       { name: policy.name, hash: policy.hash, source: policy.source },
+		policy:       { name: policy.name, hash: policy.hash, source: policy.source, modified: policy.hash !== defaultPolicyHash() },
 		target:       path.resolve(target),
 		files,
 		generatedAt:  new Date().toISOString()
@@ -121,7 +125,9 @@ export async function diskAnalyzer(files: readonly string[], sigDir: string | un
 			}
 		})
 		.build();
-	for(const f of files) {
+	/* the metadata only as files: flowR reads a DESCRIPTION for the package's name, imports, and roles */
+	analyzer.addFile(...files.filter(f => MetaFilePattern.test(f)));
+	for(const f of files.filter(f => RFilePattern.test(f))) {
 		analyzer.addRequest(fileProtocol + f);
 	}
 	return analyzer;
@@ -134,7 +140,8 @@ function lintThreads(files: readonly string[], sigDir: string | undefined, limit
 	const script = path.join(__dirname, ts ? 'lint-thread.ts' : 'lint-thread.js');
 	return lintInWorkers(() => {
 		const w = ts
-			? new Worker(`require('tsx/cjs'); require(${JSON.stringify(script)});`, { eval: true, workerData: { files, sigDir } })
+			/* tsx from badgR's own folder: an eval'd worker resolves modules from the working directory */
+			? new Worker(`require(${JSON.stringify(require.resolve('tsx/cjs', { paths: [__dirname] }))}); require(${JSON.stringify(script)});`, { eval: true, workerData: { files, sigDir } })
 			: new Worker(script, { workerData: { files, sigDir } });
 		const waiting: ((m: LintMessage) => void)[] = [];
 		const answer = (m: LintMessage) => waiting.shift()?.(m);

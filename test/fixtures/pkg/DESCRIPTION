@@ -1,0 +1,5 @@
+Package: badgrpkg
+Title: A Package for the badgR Tests
+Version: 0.1.0
+Imports: readr
+License: GPL-3

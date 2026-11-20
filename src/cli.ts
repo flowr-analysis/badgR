@@ -6,21 +6,28 @@ import { analyze } from './analyze';
 import { DefaultPolicyPath, PolicyError, loadPolicy } from './policy';
 import { ensureSigDb, sigDbStatus } from './sigdb';
 import { badgeSvg, logoSvg } from './badge';
-import { applyReview, parseReview, type ReviewEntry } from './review';
+import { applyReview, parseReview, reviewSummary, type ReviewEntry } from './review';
+import { sarifLog } from './sarif';
 import type { Report } from './core';
 import { markdownReport, textReport } from './report';
 import { ProgressPrinter } from './progress';
+import { fetchPackage, packageLabel, packageSpec } from './fetch-package';
 
-const usage = `Usage: badgr [options] <script.R | folder>...
+const usage = `Usage: badgr [options] <script.R | folder | package>...
 
 Assigns a policy tier (gold, silver, bronze, or none) to R scripts, Shiny apps, and projects
 with the static analysis of flowR.
+
+A package is a CRAN package by name (glue, glue@1.8.0, cran:glue) or a Bioconductor
+package (bioc:limma), downloaded once from its GitHub mirror into ~/.cache/badgr/packages.
 
 Options:
   --policy <file.yaml>   the policy (default: the tiers of the threat model)
   --json [file]          write the JSON report (to stdout without a file)
   --md <file | ->        write a Markdown report (- for stdout)
-  --badge <file.svg>     write the badge
+  --badge <file.svg>     write the badge; a custom policy marks the tier with *, a review
+                         (--review) that decided every finding and left none to fix with a check
+  --sarif <file | ->     write SARIF 2.1.0 for code scanning (- for stdout)
   --min-tier <tier>      exit with 2 when the artifact does not reach this tier
   --review <file.json>   mark findings as a reviewer classified them (tolerated, false-positive,
                          to-fix), as the playground exports them; this never changes a tier
@@ -47,6 +54,7 @@ async function main(): Promise<number> {
 			'json-file':      { type: 'string' },
 			'md':             { type: 'string' },
 			'badge':          { type: 'string' },
+			'sarif':          { type: 'string' },
 			'min-tier':       { type: 'string' },
 			'review':         { type: 'string' },
 			'timeout':        { type: 'string' },
@@ -94,13 +102,23 @@ async function main(): Promise<number> {
 	}
 	const timeoutMs = values.timeout === undefined ? undefined : Number(values.timeout) * 1000;
 	const review = values.review === undefined ? undefined : readReview(values.review);
-	const toStdout = Boolean(values.json && values['json-file'] === undefined) || values.md === '-';
+	const toStdout = Boolean(values.json && values['json-file'] === undefined) || values.md === '-' || values.sarif === '-';
 	let code = 0;
 	const reports = [];
 	const printer = new ProgressPrinter(positionals.length, process.stderr, values.quiet);
 	for(const [i, target] of positionals.entries()) {
-		printer.startArtifact(i, target);
-		let report = await analyze(target, policy, { timeoutMs, verbose: values.verbose, progress: p => printer.update(p) });
+		const pkg = packageSpec(target);
+		printer.startArtifact(i, pkg ? packageLabel(pkg) : target);
+		let dir = target;
+		if(pkg !== undefined) {
+			try {
+				dir = await fetchPackage(pkg, values.quiet ? undefined : err);
+			} catch(e) {
+				err(e instanceof Error ? e.message : String(e));
+				return 1;
+			}
+		}
+		let report = await analyze(dir, policy, { timeoutMs, verbose: values.verbose, progress: p => printer.update(p) });
 		if(review !== undefined) {
 			report = withReview(report, review);
 		}
@@ -132,11 +150,29 @@ async function main(): Promise<number> {
 			writeFile(values.md, md);
 		}
 	}
+	if(values.sarif !== undefined) {
+		const sarif = JSON.stringify(sarifLog(reports, r => {
+			const root = rootOf(r);
+			const lines = lineReader();
+			return {
+				fileOf:       f => f === undefined ? undefined : relativeTo(root, f),
+				lineOf:       lines,
+				capabilities: policy.capabilities
+			};
+		}), null, 2) + '\n';
+		if(values.sarif === '-') {
+			process.stdout.write(sarif);
+		} else {
+			writeFile(values.sarif, sarif);
+		}
+	}
 	if(values.badge !== undefined) {
 		/* several artifacts share one badge only if they share the tier, otherwise the weakest counts */
 		const order = [...policy.tiers.map(t => t.name), policy.fallbackTier.name];
 		const weakest = reports.reduce((a, b) => order.indexOf(b.tier.tier) > order.indexOf(a.tier.tier) ? b : a);
-		writeFile(values.badge, badgeSvg(weakest.tier.tier, weakest.tier.color));
+		/* reviewed only when a review was given and it covers every finding of every artifact */
+		const reviewed = review !== undefined && reports.some(r => r.findings.length > 0) && reports.every(r => r.findings.length === 0 || reviewSummary(r.findings).complete);
+		writeFile(values.badge, badgeSvg(weakest.tier.tier, weakest.tier.color, { custom: weakest.policy.modified, reviewed }));
 	}
 	return code;
 }
@@ -161,11 +197,19 @@ function readReview(file: string): ReviewEntry[] {
 	}
 }
 
-/** the reviewer's decisions on the findings, matched by file (relative to the target), call, and line text */
-function withReview(report: Report, entries: readonly ReviewEntry[]): Report {
-	const root = fs.existsSync(report.target) && fs.statSync(report.target).isDirectory() ? report.target : path.dirname(report.target);
+/** the folder the paths of reviews and SARIF are relative to: the analyzed folder, or the folder of the analyzed file */
+function rootOf(report: Report): string {
+	return fs.existsSync(report.target) && fs.statSync(report.target).isDirectory() ? report.target : path.dirname(report.target);
+}
+
+function relativeTo(root: string, file: string): string {
+	return path.relative(root, file).split(path.sep).join('/');
+}
+
+/** the text of a line of a file on disk, each file read once */
+function lineReader(): (file: string | undefined, line: number) => string | undefined {
 	const lines = new Map<string, string[]>();
-	const textOf = (file: string | undefined, line: number) => {
+	return (file, line) => {
 		if(file === undefined) {
 			return undefined;
 		}
@@ -174,7 +218,12 @@ function withReview(report: Report, entries: readonly ReviewEntry[]): Report {
 		}
 		return lines.get(file)?.[line - 1];
 	};
-	return applyReview(report, entries, f => f === undefined ? undefined : path.relative(root, f).split(path.sep).join('/'), textOf);
+}
+
+/** the reviewer's decisions on the findings, matched by file (relative to the target), call, and line text */
+function withReview(report: Report, entries: readonly ReviewEntry[]): Report {
+	const root = rootOf(report);
+	return applyReview(report, entries, f => f === undefined ? undefined : relativeTo(root, f), lineReader());
 }
 
 function writeFile(file: string, content: string): void {

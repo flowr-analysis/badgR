@@ -27,7 +27,20 @@ Findings carry flowR's file role: `source`, `test`, `vignette`, `install` (`inst
 a forbid rule can name other roles with `files:`. `allow` lists calls (regular expressions on
 `pkg::fn`) that never become findings; the default policy allows none.
 
-Playground: <https://flowr-analysis.github.io/badgR/> (runs in the browser, your code stays local)
+badgR reads scripts, Shiny apps, and R packages: a package's `DESCRIPTION` and `NAMESPACE`, its
+`.Rprofile` (role `startup`), and its built vignettes in `inst/doc` (role `vignette`). A call into a
+package is followed into the packages it calls in turn (as far as flowR's signature database knows them),
+so `readr::write_csv` counts what `vroom` does.
+
+The badge marks a tier checked against another policy than the default with `*` (`gold*`), and a
+review that decided every finding and left none to fix with a check mark.
+
+Playground: <https://flowr-analysis.github.io/badgR/> (runs in the browser, your code stays local).
+It reads uploads, pasted code, GitHub and GitLab repositories, gists, and packages by name (`glue`,
+`glue@1.8.0`, `cran:glue`, `bioc:limma`). A link to a result carries the code (or its URL), the policy
+if it is not the default (`p=`), the review (`rv=`), and the selected finding (`at=`), always in the same
+order, so the same result gives the same link; `&export=sarif` (or `json`, `md`, `badge`, `review`)
+makes the page download that file once the analysis is done.
 
 ## Usage
 
@@ -36,6 +49,8 @@ npm ci
 npm run sigdb                                   # once, downloads flowR's signature database
 npm run badgr -- app/                           # a folder or an .R, .Rmd, or .qmd file
 npm run badgr -- app/ --json report.json --md report.md --badge badge.svg
+npm run badgr -- app/ --sarif badgr.sarif               # SARIF 2.1.0 for code scanning
+npm run badgr -- glue@1.8.0                     # a CRAN package (or cran:glue, bioc:limma), from its GitHub mirror
 npm run badgr -- app/ --min-tier silver         # exit code 2 below silver
 npm run badgr -- app/ --review review.json      # reviewer decisions from the playground
 ```
@@ -45,6 +60,17 @@ With Docker, which needs no network once built:
 ```sh
 docker build -t badgr .
 ./badgr app/ --badge badge.svg                  # output in ./badgr-out
+```
+
+SARIF results keep their identity across runs: rule ids are `badgr/<capability>` and
+`flowr/<linting rule>`, and `partialFingerprints` hash the file, call, capability, and the text of the
+line, not the line number. Findings a review tolerated or marked as false positives carry a suppression
+with the reviewer's note. For GitHub code scanning:
+
+```yaml
+- run: ./badgr . --sarif badgr.sarif --review review.json
+- uses: github/codeql-action/upload-sarif@v3
+  with: { sarif_file: badgr.sarif }
 ```
 
 ## Development

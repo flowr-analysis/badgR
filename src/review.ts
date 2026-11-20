@@ -61,3 +61,17 @@ export function applyReview<R extends { readonly findings: readonly Finding[] }>
 		})
 	};
 }
+
+/** how far the review of a report's findings is: `complete` once every finding is decided and none is left to fix */
+export interface ReviewSummary {
+	readonly total:      number
+	readonly decided:    number
+	readonly toFix:      number
+	readonly complete:   boolean
+}
+
+export function reviewSummary(findings: readonly Pick<Finding, 'review'>[]): ReviewSummary {
+	const c = reviewCounts(findings.map(f => f.review?.state));
+	const decided = findings.length - c.unreviewed;
+	return { total: findings.length, decided, toFix: c['to-fix'], complete: findings.length > 0 && c.unreviewed === 0 && c['to-fix'] === 0 };
+}

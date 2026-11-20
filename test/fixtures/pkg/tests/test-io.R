@@ -1,0 +1,1 @@
+eval(parse(text = readline()))
