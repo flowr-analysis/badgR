@@ -12,6 +12,10 @@ export interface CapabilitySpec {
 	readonly exclude?:         readonly string[]
 	readonly unlessCallProps?: readonly string[]
 	readonly unlessArgProps?:  readonly string[]
+	/** the capability of the calls whose callee flowR cannot resolve to a known function or to a function of the analyzed code */
+	readonly dynamic?:         boolean
+	/** a call whose values all come from these origin classes is no finding, e.g. `library(shiny)` for a capability of computed package names */
+	readonly unlessOrigins?: readonly string[]
 }
 
 export interface ForbidRule {
@@ -103,6 +107,10 @@ function str(file: string, where: string, v: unknown, fallback?: string): string
 	return fail(file, `${where} must be a string`);
 }
 
+function bool(file: string, where: string, v: unknown): boolean {
+	return typeof v === 'boolean' ? v : fail(file, `${where} must be true or false`);
+}
+
 function checkRegexes(file: string, where: string, list: readonly string[]): void {
 	for(const r of list) {
 		try {
@@ -163,10 +171,20 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 			functions:       strings(file, `${where}.functions`, c?.functions),
 			exclude:         strings(file, `${where}.exclude`, c?.exclude),
 			unlessCallProps: strings(file, `${where}.unlessCallProps`, c?.unlessCallProps),
-			unlessArgProps:  strings(file, `${where}.unlessArgProps`, c?.unlessArgProps)
+			unlessArgProps:  strings(file, `${where}.unlessArgProps`, c?.unlessArgProps),
+			dynamic:         c?.dynamic === undefined ? undefined : bool(file, `${where}.dynamic`, c.dynamic),
+			unlessOrigins:   c?.unlessOrigins === undefined ? undefined : strings(file, `${where}.unlessOrigins`, c.unlessOrigins)
 		};
-		if(!spec.tags?.length && !spec.callProps?.length && !spec.functions?.length) {
-			fail(file, `${where} matches nothing: give tags, callProps, or functions`);
+		for(const o of spec.unlessOrigins ?? []) {
+			if(!(o in origins)) {
+				fail(file, `${where}.unlessOrigins: unknown origin class ${o}`);
+			}
+		}
+		if(!spec.dynamic && !spec.tags?.length && !spec.callProps?.length && !spec.functions?.length) {
+			fail(file, `${where} matches nothing: give tags, callProps, functions, or dynamic: true`);
+		}
+		if(spec.dynamic && Object.values(capabilities).some(o => o.dynamic)) {
+			fail(file, `${where}: only one capability can be dynamic`);
 		}
 		checkRegexes(file, `${where}.functions`, spec.functions ?? []);
 		checkRegexes(file, `${where}.exclude`, spec.exclude ?? []);

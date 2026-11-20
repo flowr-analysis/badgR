@@ -26,7 +26,12 @@ capabilities:
   code-execution:
     class: severe
     description: evaluates R code
-    functions: ['^(eval|evalq|parse|unserialize)$']
+    functions:
+      - '^(eval|evalq|eval\.parent|parse|str2lang|str2expression|unserialize)$'
+      # code of other languages, and code sent to the IDE
+      - '^reticulate::(py_run_string|py_run_file|py_eval|source_python|repl_python)$'
+      - '^Rcpp::(sourceCpp|cppFunction|evalCpp)$'
+      - '^rstudioapi::(sendToConsole|executeCommand|jobRunScript)$'
     tags: [eval]
     unlessCallProps: [pure]
     unlessArgProps: [callee]
@@ -45,8 +50,14 @@ capabilities:
   shell:
     class: severe
     description: runs a command of the operating system
-    functions: ['^(system|system2|shell|shell\.exec|pipe)$']
+    functions:
+      - '^(system|system2|shell|shell\.exec|pipe)$'
+      - '^(processx|callr|sys)::'
     tags: [process]
+  environment:
+    class: severe
+    description: changes environment variables, which decide what later commands run (PATH, LD_PRELOAD)
+    functions: ['^(Sys\.setenv|Sys\.unsetenv)$']
   serialization:
     class: severe
     description: reads or writes serialized R objects
@@ -54,11 +65,33 @@ capabilities:
   destructive:
     class: outward
     description: removes, renames, or overwrites files
-    functions: ['^(file\.remove|file\.rename|file\.copy|file\.create|file\.append|unlink)$']
+    functions:
+      - '^(file\.remove|file\.rename|file\.copy|file\.create|file\.append|unlink)$'
+      - '^(file\.symlink|file\.link|Sys\.chmod|Sys\.umask|Sys\.setFileTime)$'
+      # extracting or creating archives writes (and overwrites) files
+      - '^(utils::)?(unzip|untar|zip|tar)$'
+  process-control:
+    class: severe
+    description: opens programs or the IDE editor, runs R CMD, or signals processes
+    functions: ['^(tools::)?(Rcmd|pskill)$', '^(utils::)?(browseURL|file\.edit)$']
+  # a package loaded by a computed name runs whatever package that is; library(shiny) is no finding
+  package-load:
+    class: severe
+    description: attaches or loads a package by a computed name, which runs that package's code
+    functions: ['^(library|require|loadNamespace|requireNamespace|attachNamespace|loadPackageNamespace)$']
+    unlessOrigins: [author]
+  # a call of a value the analysis cannot resolve to a function: `l$f(x)`, `get(x)(y)`
+  dynamic-call:
+    class: severe
+    description: calls a function the analysis cannot resolve
+    dynamic: true
   network-file:
     class: outward
     description: opens a network or file connection, or reads or writes a file
-    functions: ['^(url|socketConnection|gzfile|bzfile|xzfile|fifo|read\.table|read\.csv2?|read\.delim2?|write\.csv2?|write\.table)$']
+    functions:
+      - '^(url|file|socketConnection|gzfile|bzfile|xzfile|fifo|unz)$'
+      - '^(readLines|writeLines|scan|sink|write|writeBin|readBin|writeChar|readChar)$'
+      - '^(read\.table|read\.csv2?|read\.delim2?|read\.fwf|read\.dcf|write\.csv2?|write\.table|write\.dcf)$'
     # not `writes`: flowR states it for cat() and graphics devices too
     tags: [network]
   output:
@@ -68,12 +101,21 @@ capabilities:
 
 # package functions whose internal sinks do not count (Shiny evaluates the author's code)
 trusted:
-  - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule)$'
+  # rlang's argument checks and conditions evaluate only the package's own calls
+  - '^rlang::(abort|warn|inform|signal|arg_match0?|check_\w+|caller_(env|arg|call)|current_(env|call)|list2|dots_list|enquos?|enexprs?|ensyms?|format_error_bullets|is_\w+|local_options|on_load|run_on_load)$'
+  # data.table evaluates only the expressions of the caller (`[` i/j/by) and builds tables from values
+  - '^data\.table::(data\.table|as\.data\.table|setDT|setkeyv?|setorderv?|setnames|copy|rbindlist|\w+\.data\.table|:=|\[\.data\.table)$'
+  # DT render functions are like shiny's render*: they evaluate the caller's own expression
+  - '^DT::(renderDT|renderDataTable|datatable|dataTableOutput|DTOutput|dataTableProxy|replaceData|formatStyle|formatCurrency|formatRound|formatPercentage|formatDate)$'
+  # testthat expectations evaluate the quoted code the author passes in (quasi_label), not strings
+  - '^testthat::(expect_\w+|test_that|describe|it|context|skip\w*|succeed|fail|local_\w+|with_\w+|test_path)$'
+  - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule|NS)$'
 
 # calls that never become findings, whatever they can do: regular expressions on
 # pkg::fn (or fn when flowR cannot qualify it). Use sparingly: an allowed call is not
 # looked at at all, unlike `trusted`, which only skips the sinks inside a package.
-allow: []
+# Shiny's session object: its methods are Shiny's own (onSessionEnded, sendCustomMessage, ...)
+allow: ['^session\$']
 
 # which files ship and run where the artifact is used, from flowR's file roles:
 # source (R/, app scripts), test (tests/), vignette (vignettes/), install (inst/),

@@ -37,7 +37,9 @@ describe('flowR analysis of the fixtures', () => {
 	test('a linting rule over the time limit is stopped, and no tier that needs it is reached', async() => {
 		const r = await analyze(fixture('gold'), { ...policy, lintTimeout: 0.001 });
 		expect(r.tier.tier).not.toBe('gold');
-		expect(r.lint.map(l => l.error)).toEqual(r.lint.map(() => expect.stringMatching(/^stopped after 0.001 s/)));
+		/* a timer of 1 ms can fire late on a busy machine, after a quick rule already answered: most, not all, are stopped */
+		expect(r.lint.filter(l => l.error !== undefined).map(l => l.error)).toEqual(r.lint.filter(l => l.error !== undefined).map(() => expect.stringMatching(/^stopped after 0.001 s/)));
+		expect(r.lint.filter(l => l.error !== undefined).length).toBeGreaterThan(0);
 	}, 120_000);
 
 	test('the linting rules give the same results in their threads as in this one', async() => {

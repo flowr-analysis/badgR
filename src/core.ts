@@ -4,12 +4,14 @@
  * it loaded. Nothing in here touches the file system or the network.
  */
 import { Identifier } from '@eagleoutice/flowr/dataflow/environments/identifier';
-import { VertexType } from '@eagleoutice/flowr/dataflow/graph/vertex';
+import { DfgVertex, VertexType } from '@eagleoutice/flowr/dataflow/graph/vertex';
+import { BuiltInProcName } from '@eagleoutice/flowr/dataflow/environments/built-in-proc-name';
 import { Dataflow } from '@eagleoutice/flowr/dataflow/graph/df-helper';
 import { SlicingCriterion } from '@eagleoutice/flowr/slicing/criterion/parse';
 import { ArgProp, CallProp } from '@eagleoutice/flowr/dataflow/environments/built-in-props';
 import type { BuiltInIndex } from '@eagleoutice/flowr/dataflow/environments/query-fn-props';
-import type { NodeId } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/processing/node-id';
+import { NodeId } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/processing/node-id';
+import { DfEdge, EdgeType } from '@eagleoutice/flowr/dataflow/graph/edge';
 import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
 import { type CapabilitySpec, type FileRoleName, type Policy, FileRoles, lintRulesOf } from './policy-core';
 import type { FileRole } from '@eagleoutice/flowr/project/context/flowr-file';
@@ -22,8 +24,11 @@ export const BaseRPackages: ReadonlySet<string> = new Set([
 	'compiler', 'grid', 'splines', 'stats4', 'tcltk'
 ]);
 
-/** the R files badgR analyzes */
-export const RFilePattern = /\.(R|r|Rmd|rmd|qmd)$/;
+/** the R files badgR analyzes, `.Rprofile` (run at startup) included */
+export const RFilePattern = /(\.(R|r|Rmd|rmd|qmd)|(^|\/)\.Rprofile)$/;
+
+/** the files of a package or project flowR reads besides the code: what it imports, exports, and is */
+export const MetaFilePattern = /(^|\/)(DESCRIPTION|NAMESPACE)$/;
 
 /** where an analysis is, for progress output */
 export type Phase = 'files' | 'dataflow' | 'sinks' | 'origins' | 'lint' | 'tier' | 'done';
@@ -49,12 +54,61 @@ export type ProgressListener = (p: Progress) => void;
  */
 export type CalleesOf = (pkg: string, fn: string) => Iterable<string> | undefined;
 
+/** `pkg::fn` (or `pkg:::fn`) split into its parts, or `undefined` for a plain name */
+export function splitQualified(name: string): { ns: string, fn: string } | undefined {
+	const m = /^([A-Za-z][\w.]*):::?(.+)$/.exec(name);
+	return m === null ? undefined : { ns: m[1], fn: m[2] };
+}
+
+/**
+ * The callees of a package function across packages: the signature data lists a call into another package
+ * as `pkg::fn` and stops there, so `readr::write_csv` would hide what `vroom::vroom_write` does. This follows
+ * such calls (not into base R or functions the policy trusts, at most `depth` packages deep), so the sinks
+ * of the other package count too.
+ */
+export function acrossPackages(direct: CalleesOf, trusted: (call: string) => boolean = () => false, depth = 6): CalleesOf {
+	const cache = new Map<string, readonly string[] | undefined>();
+	return (pkg, fn) => {
+		const key = `${pkg}::${fn}`;
+		if(cache.has(key)) {
+			return cache.get(key);
+		}
+		const first = direct(pkg, fn);
+		if(first === undefined) {
+			cache.set(key, undefined);
+			return undefined;
+		}
+		const out = new Set<string>();
+		const followed = new Set<string>([key]);
+		const queue: [string, number][] = [...first].map(c => [String(c), 0]);
+		for(let next = queue.shift(); next !== undefined; next = queue.shift()) {
+			const [c, d] = next;
+			out.add(c);
+			const q = splitQualified(c);
+			const k = q === undefined ? undefined : `${q.ns}::${q.fn}`;
+			if(q === undefined || k === undefined || d >= depth || followed.has(k) || BaseRPackages.has(q.ns) || trusted(k)) {
+				continue;
+			}
+			followed.add(k);
+			for(const x of direct(q.ns, q.fn) ?? []) {
+				if(!out.has(String(x))) {
+					queue.push([String(x), d + 1]);
+				}
+			}
+		}
+		const res = [...out];
+		cache.set(key, res);
+		return res;
+	};
+}
+
 export interface Report {
 	readonly tool:          'badgR'
 	readonly toolVersion:   string
 	readonly flowrVersion:  string
 	readonly sigdb:         { readonly tag?: string, readonly present: boolean, readonly scope?: string }
-	readonly policy:        { readonly name: string, readonly hash: string, readonly source: string }
+	/** `modified`: the policy is not badgR's default policy, so the tier means what that policy says */
+	readonly policy:        { readonly name: string, readonly hash: string, readonly source: string, readonly modified?: boolean }
 	readonly target:        string
 	readonly files:         readonly string[]
 	readonly generatedAt:   string
@@ -143,8 +197,12 @@ function capabilityOf(caps: readonly CompiledCapability[], idx: BuiltInIndex, na
  * when the web page's package data is generated. Sound for the policy it is generated with.
  */
 export function mayHaveCapability(policy: Policy, idx: BuiltInIndex, name: string): boolean {
-	return capabilityOf(compile(policy), idx, name, undefined) !== undefined;
+	const q = splitQualified(name);
+	return capabilityOf(compile(policy), idx, q?.fn ?? name, q?.ns) !== undefined;
 }
+
+/** replacement functions after which a function is no longer the definition flowR resolved its calls to */
+const Rewrites: ReadonlySet<string> = new Set(['base::body<-', 'base::formals<-', 'base::environment<-', 'body<-', 'formals<-', 'environment<-']);
 
 function originsOf(policy: Policy, types: readonly string[]): string[] {
 	const out = new Set<string>();
@@ -267,6 +325,8 @@ const breathe = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
 /** Finds the capability calls of everything the analyzer was given, traces their values, and runs the linting rules. */
 export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calleesOf: CalleesOf, progress: ProgressListener = () => {}, onPartial?: PartialListener, lintRunner?: LintRunner): Promise<CoreResult> {
+	const trustedCall = policy.trusted.map(r => new RegExp(r));
+	calleesOf = acrossPackages(calleesOf, c => trustedCall.some(r => r.test(c)));
 	const rules = lintRulesOf(policy);
 	const lintDone = new Map<string, LintSummary>();
 	const lintQueries: FlowrQueryRecord[] = [];
@@ -299,6 +359,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	const ctx = analyzer.inspectContext();
 	const idx = ctx.env.builtInIndex;
 	const caps = compile(policy);
+	const dynamicCap = caps.find(c => c.spec.dynamic);
 	const trusted = policy.trusted.map(r => new RegExp(r));
 	const allowed = policy.allow.map(r => new RegExp(r));
 	/* what each file is for, from flowR's file roles; a file without one is a plain source */
@@ -310,7 +371,46 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	}
 	const qualified = Dataflow.qualifyAll(df.graph, true);
 
-	interface Candidate { id: NodeId, call: string, cap: CompiledCapability, via: 'direct' | 'package', through?: string, contract?: Finding['contract'], tags: string[] }
+	/* `trace`: more vertices whose values count, the callee of a call flowR could not resolve */
+	interface Candidate { id: NodeId, call: string, cap: CompiledCapability, via: 'direct' | 'package', through?: string, contract?: Finding['contract'], tags: string[], trace?: readonly NodeId[] }
+	/*
+	 * the calls that define the value a callee reads, by qualified name: for a variable, the calls it is defined by
+	 * (not the assignment itself), for a call, that call; `undefined` for a definition that is no call (a parameter, a value)
+	 */
+	const nameOfCall = (c: NodeId): string => {
+		const q = qualified.get(c);
+		const cv = df.graph.getVertex(c) as { name?: Parameters<typeof Identifier.getName>[0] } | undefined;
+		const nm = q !== undefined ? String(Identifier.getName(q)) : String(cv?.name === undefined ? '' : Identifier.getName(cv.name));
+		const cns = q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined;
+		return cns === undefined ? nm : `${cns}::${nm}`;
+	};
+	const argumentsOf = (c: NodeId): NodeId[] => [...df.graph.outgoingEdges(c) ?? []]
+		.filter(([t, e]) => DfEdge.includesType(e, EdgeType.Argument) && !NodeId.isBuiltIn(t)).map(([t]) => t);
+	type Definer = { id: NodeId, name: string } | undefined;
+	const definersOf = (r: NodeId): Definer[] => {
+		const rv = df.graph.getVertex(r);
+		if(rv?.tag === VertexType.FunctionCall) {
+			return [{ id: r, name: nameOfCall(r) }];
+		}
+		if(rv?.tag !== VertexType.VariableDefinition) {
+			return [undefined];
+		}
+		const out: Definer[] = [];
+		for(const [t, e] of df.graph.outgoingEdges(r) ?? []) {
+			if(!DfEdge.includesType(e, EdgeType.DefinedBy)) {
+				continue;
+			}
+			const tv = df.graph.getVertex(t);
+			if(tv?.tag === VertexType.FunctionCall) {
+				if(!DfgVertex.hasOrigin(tv, BuiltInProcName.Assignment)) {
+					out.push({ id: t, name: nameOfCall(t) });
+				}
+			} else {
+				out.push(undefined);
+			}
+		}
+		return out.length === 0 ? [undefined] : out;
+	};
 	/* what flowR itself states of a function: its semantic tags, the reason a capability fits it */
 	const tagsOf = (name: string, ns: string | undefined) => [...((ns === undefined ? undefined : idx.get(Identifier.make(name, ns))) ?? idx.get(Identifier.make(name)))?.tags ?? []].map(String);
 	let lookups = 0;
@@ -334,12 +434,65 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		const name = q !== undefined ? String(Identifier.getName(q)) : String(Identifier.getName((v as { name: Parameters<typeof Identifier.getName>[0] }).name));
 		const ns = q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined;
 		const call = ns === undefined ? name : `${ns}::${name}`;
-		if(allowed.some(r => r.test(call))) {
+		/* what flowR resolved the callee to: built-in or package functions, and function definitions of the code */
+		const builtins: { name: string, ns: string | undefined }[] = [];
+		let closures = 0;
+		const calleeReads: NodeId[] = [];
+		for(const [target, e] of df.graph.outgoingEdges(id) ?? []) {
+			if(DfEdge.includesType(e, EdgeType.Calls)) {
+				if(NodeId.isBuiltIn(target)) {
+					const pf = NodeId.toPkgFn(target);
+					builtins.push(pf ? { name: pf[1], ns: pf[0] } : { name: String(NodeId.fromBuiltIn(target)), ns: undefined });
+				} else {
+					closures++;
+				}
+			} else if(DfEdge.includesType(e, EdgeType.Reads) && DfEdge.doesNotIncludeType(e, EdgeType.Argument) && !NodeId.isBuiltIn(target)) {
+				calleeReads.push(target);
+			}
+		}
+		/* the call by its name, and each function flowR resolved its callee to (`l$f()` with `l <- list(f = system)`) */
+		let direct: { cap: CompiledCapability, name: string, ns: string | undefined, call: string } | undefined;
+		for(const t of [{ name, ns }, ...builtins.filter(b => b.name !== name)]) {
+			const tc = t.ns === undefined ? t.name : `${t.ns}::${t.name}`;
+			if(allowed.some(r => r.test(tc))) {
+				continue;
+			}
+			const cap = capabilityOf(caps, idx, t.name, t.ns);
+			if(cap !== undefined && (direct === undefined || caps.indexOf(cap) < caps.indexOf(direct.cap))) {
+				direct = { cap, ...t, call: tc };
+			}
+		}
+		if(direct !== undefined) {
+			candidates.push({ id, call: direct.call, cap: direct.cap, via: 'direct', tags: tagsOf(direct.name, direct.ns) });
 			continue;
 		}
-		const direct = capabilityOf(caps, idx, name, ns);
-		if(direct !== undefined) {
-			candidates.push({ id, call, cap: direct, via: 'direct', tags: tagsOf(name, ns) });
+		/*
+		 * a callee flowR resolved to nothing: a computed value (`get(x)()`, `mget(...)[[1]]()`) or a variable that
+		 * holds no function of the code; a plain name it does not know is a package function, looked up below.
+		 * A function whose body, formals, or environment the code replaces is no longer the one flowR resolved.
+		 */
+		if(dynamicCap !== undefined) {
+			const defs = calleeReads.flatMap(r => definersOf(r));
+			const rewrites = defs.filter(d => d !== undefined && Rewrites.has(d.name)) as { id: NodeId, name: string }[];
+			const rewritten = rewrites.length > 0;
+			const unresolved = builtins.length === 0 && closures === 0 && ((v as { origin: unknown }).origin === 'unnamed' || calleeReads.length > 0);
+			/* the value of a trusted package function (`d <- shiny::reactive(...); d()`) runs the code's own expression */
+			const fromTrusted = defs.length > 0 && defs.every(d => d !== undefined && trusted.some(r => r.test(d.name)));
+			if(rewritten || unresolved && !fromTrusted) {
+				const node = df.graph.idMap?.get(id);
+				const callee = String(node?.lexeme ?? name);
+				if(!allowed.some(r => r.test(callee))) {
+					/* a replaced body is a language object: what its parts are built of */
+					const parts = rewrites.flatMap(w => argumentsOf(w.id)).flatMap(a => [a, ...argumentsOf(a)]);
+					candidates.push({ id, call: callee, cap: dynamicCap, via: 'direct', tags: [], trace: [...calleeReads, ...parts] });
+				}
+				continue;
+			}
+		}
+		if(builtins.length === 0 && closures === 0 && ((v as { origin: unknown }).origin === 'unnamed' || calleeReads.length > 0)) {
+			continue;
+		}
+		if(allowed.some(r => r.test(call))) {
 			continue;
 		}
 		/* a function of a package: does anything it calls, transitively, have a capability? */
@@ -355,7 +508,9 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 				unresolved.add(ns);
 			}
 			for(const callee of callees ?? []) {
-				const cap = capabilityOf(caps, idx, String(callee), undefined);
+				/* a callee in another package comes as `pkg::fn` */
+				const q = splitQualified(String(callee));
+				const cap = capabilityOf(caps, idx, q?.fn ?? String(callee), q?.ns);
 				if(cap !== undefined && (hit === null || caps.indexOf(cap) < caps.indexOf(hit.cap))) {
 					hit = { cap, through: String(callee) };
 				}
@@ -374,7 +529,15 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	/* where the values of the candidate calls come from, in batches, so progress can tell how far the tracing is */
 	const sources = new Map<NodeId, InputSource[]>();
 	if(candidates.length > 0) {
-		const crit = candidates.map(c => SlicingCriterion.fromId(c.id));
+		/* a call's own vertex, and for a call flowR could not resolve, the vertices its callee reads */
+		const owner: NodeId[] = [];
+		const crit: ReturnType<typeof SlicingCriterion.fromId>[] = [];
+		for(const c of candidates) {
+			for(const t of [c.id, ...c.trace ?? []]) {
+				owner.push(c.id);
+				crit.push(SlicingCriterion.fromId(t));
+			}
+		}
 		const message = `tracing the values of ${crit.length} sink call(s)`;
 		progress({ phase: 'origins', message, done: 0, total: crit.length });
 		await breathe();
@@ -388,7 +551,10 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms, result: `the value sources of ${part.length} call(s)` });
 			const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
 			/* a call flowR returned nothing for has values of unknown source, not none */
-			part.forEach((c, i) => sources.set(candidates[at + i].id, results[c] ?? [{ id: candidates[at + i].id, types: ['unknown'] }]));
+			part.forEach((c, i) => {
+				const o = owner[at + i];
+				sources.set(o, [...sources.get(o) ?? [], ...results[c] ?? [{ id: o, types: ['unknown'] }]]);
+			});
 			at += part.length;
 			const own = (Date.now() - tracing) / at * (crit.length - at);
 			const bound = lintBound();
@@ -397,16 +563,51 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			/* about four updates a second: bigger batches when the calls trace fast */
 			batch = Math.max(1, Math.min(64, Math.round(part.length * 250 / Math.max(1, ms))));
 		}
+		/*
+		 * a value of the enclosing scope (a global read in a closure) is, where the closure is called, what the
+		 * definitions active there hold: flowR links the read to them, trace those too (a few levels of closures)
+		 */
+		const traced = new Set<NodeId>();
+		for(let round = 0; round < 4; round++) {
+			const want = new Map<NodeId, NodeId[]>();
+			for(const list of sources.values()) {
+				for(const src of list) {
+					if(!src.types.includes('scope') || traced.has(src.id)) {
+						continue;
+					}
+					traced.add(src.id);
+					const defs = [...df.graph.outgoingEdges(src.id) ?? []]
+						.filter(([t, e]) => DfEdge.includesType(e, EdgeType.DefinedByOnCall) && !NodeId.isBuiltIn(t)).map(([t]) => t);
+					if(defs.length > 0) {
+						want.set(src.id, defs);
+					}
+				}
+			}
+			if(want.size === 0) {
+				break;
+			}
+			const part = [...new Set([...want.values()].flat())].map(t => SlicingCriterion.fromId(t));
+			t0 = Date.now();
+			const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
+			queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms: Date.now() - t0, result: `the value sources of ${part.length} definition(s) that closures read` });
+			const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+			for(const [o, list] of sources) {
+				const more = list.flatMap(src => (want.get(src.id) ?? []).flatMap(t => results[SlicingCriterion.fromId(t)] ?? [{ id: t, types: ['unknown'] }]));
+				if(more.length > 0) {
+					sources.set(o, [...list, ...more]);
+				}
+			}
+		}
 	}
 
-	const findings: Finding[] = candidates.map(c => {
+	const all: Finding[] = candidates.map(c => {
 		const node = df.graph.idMap?.get(c.id);
 		const range = node?.info?.fullRange ?? node?.location;
 		const types = [...new Set((sources.get(c.id) ?? []).flatMap(s => s.types.length > 0 ? s.types : ['unknown']))].sort();
 		return {
 			id:         String(c.id),
 			file:       node?.info?.file,
-			role:       roleByPath.get(node?.info?.file ?? '') ?? 'source',
+			role:       roleOf(node?.info?.file, roleByPath),
 			loc:        range ? [range[0], range[1], range[2], range[3]] as const : undefined,
 			call:       c.call,
 			capability: c.cap.name,
@@ -418,6 +619,11 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			tags:       c.tags,
 			contract:   c.contract
 		};
+	});
+	/* a capability can leave out calls whose values all come from origins it names (a call without any traced value stays) */
+	const findings = all.filter(f => {
+		const unless = policy.capabilities[f.capability]?.unlessOrigins;
+		return unless === undefined || f.origins.length === 0 || !f.origins.every(o => unless.includes(o));
 	});
 
 	const unresolvedPackages = [...unresolved].sort();
@@ -446,6 +652,17 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		queries.push(...lintQueries);
 	}
 	return { findings, lint, unresolvedPackages, queries };
+}
+
+/**
+ * What a file is for: flowR's role, except that `inst/doc` holds the built vignettes (their code is copied
+ * there by `R CMD build`), so it counts as a vignette, not as installed code. A file without a role is a source.
+ */
+export function roleOf(file: string | undefined, roleByPath: ReadonlyMap<string, FileRoleName>): FileRoleName {
+	if(file !== undefined && /(^|[\\/])inst[\\/]doc[\\/]/.test(file)) {
+		return 'vignette';
+	}
+	return roleByPath.get(file ?? '') ?? 'source';
 }
 
 /** Assigns the tier and wraps everything into a report. */

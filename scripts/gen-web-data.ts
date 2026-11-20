@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { FlowrAnalyzerBuilder } from '@eagleoutice/flowr/project/flowr-analyzer-builder';
 import { log, LogLevelNames } from '@eagleoutice/flowr/util/log';
 import { loadPolicy } from '../src/policy';
-import { BaseRPackages, mayHaveCapability } from '../src/core';
+import { BaseRPackages, acrossPackages, mayHaveCapability } from '../src/core';
 import { ensureSigDb, sigDbStatus } from '../src/sigdb';
 
 export interface WebPackage {
@@ -56,6 +56,11 @@ async function main(): Promise<void> {
 	const onlyAt = process.argv.indexOf('--only');
 	const only = onlyAt > 0 ? new Set([...process.argv[onlyAt + 1].split(','), ...BaseRPackages]) : undefined;
 	const names = src.packageNames().map(String).filter(n => only === undefined || only.has(n)).sort().slice(0, limit);
+	/* calls into other packages are followed, so a package's data names the sinks it reaches through them */
+	const callees = acrossPackages((pkg, fn) => {
+		const v = src.latestVersion(pkg as never)?.toString();
+		return v === undefined ? undefined : [...src.transitiveCallees(pkg as never, fn as never, v as never) ?? []].map(String);
+	}, c => policy.trusted.some(r => new RegExp(r).test(c)));
 	const index: Record<string, string> = {};
 	const start = Date.now();
 	let bytes = 0;
@@ -64,8 +69,7 @@ async function main(): Promise<void> {
 		const exported = (src.lookup(pkg as never, version)?.exported ?? []).map(String);
 		const c: Record<string, string[]> = {};
 		for(const fn of exported) {
-			const callees = version === undefined ? undefined : src.transitiveCallees(pkg as never, fn as never, version);
-			const hits = [...new Set([...(callees ?? [])].map(String).filter(isRelevant))].sort();
+			const hits = [...new Set([...(callees(pkg, fn) ?? [])].map(String).filter(isRelevant))].sort();
 			if(hits.length > 0) {
 				c[fn] = hits;
 			}
