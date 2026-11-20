@@ -8,9 +8,9 @@ import { type FileRoleName, type Policy, FileRoles, parsePolicy, PolicyError, li
 import { markdownReport } from '../src/report';
 import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, reviewSummary, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
 import type { PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
-import { SourceError, describeUrl, fromDrop, fromFiles, fromUrl } from './sources';
+import { SourceError, describeUrl, fromDrop, fromFiles, fromUrl, inflateLimited } from './sources';
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
-import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
+import { deflateSync, strFromU8, strToU8 } from 'fflate';
 import defaultPolicy from '../policies/default.yaml';
 import { parse as parseYaml } from 'yaml';
 import { Examples } from './examples';
@@ -742,7 +742,7 @@ const Exports: Record<string, (r: Report, files: readonly SourceFile[]) => [stri
 let exportAfter: string | undefined;
 
 function exportNow(kind: string, r: Report, files: readonly SourceFile[]): void {
-	const make = Exports[kind];
+	const make = Object.hasOwn(Exports, kind) ? Exports[kind] : undefined;
 	if(make === undefined) {
 		showError(`A link can export ${Object.keys(Exports).join(', ')}, not ${kind}.`);
 		return;
@@ -2509,7 +2509,7 @@ function openLink(): void {
 	let linkPolicy = defaultPolicy;
 	if(p !== null) {
 		try {
-			linkPolicy = strFromU8(inflateSync(unb64url(p)));
+			linkPolicy = strFromU8(inflateLimited(unb64url(p), 1 << 20));
 			parsePolicy(linkPolicy, 'policy', '');
 		} catch(e) {
 			showError(`The policy in this link is damaged, so the default policy is used: ${e instanceof Error ? e.message : String(e)}`);
@@ -2526,7 +2526,7 @@ function openLink(): void {
 	const rv = q.get('rv');
 	if(rv !== null) {
 		try {
-			for(const e of parseReview(strFromU8(inflateSync(unb64url(rv))))) {
+			for(const e of parseReview(strFromU8(inflateLimited(unb64url(rv), 4 << 20)))) {
 				reviews.set(e.key, e);
 			}
 			saveReviews();
@@ -2536,7 +2536,7 @@ function openLink(): void {
 	const z = q.get('z');
 	if(z !== null) {
 		try {
-			code = strFromU8(inflateSync(unb64url(z)));
+			code = strFromU8(inflateLimited(unb64url(z)));
 		} catch{
 			showError('The code in this link is damaged.');
 		}

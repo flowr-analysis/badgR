@@ -88,3 +88,14 @@ capabilities: { shell: { class: severe, functions: ['^system$'] } }
 		expect(matchesRule({ ...rule, origins: ['none', 'outside'] }, f(['outside']), ['source'])).toBe(true);
 	});
 });
+
+describe('policy names of plain objects', () => {
+	test('inherited names such as toString or constructor are no origin class or capability', async() => {
+		const { parsePolicy } = await import('../src/policy-core');
+		const fs = await import('node:fs');
+		const text = fs.readFileSync(require('node:path').join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8');
+		expect(() => parsePolicy(text.replace('fallbackOrigin: unknown', 'fallbackOrigin: toString'), 'p', '')).toThrow(/no origin class/);
+		expect(() => parsePolicy(text.replace('      - classes: [severe, outward]', '      - capabilities: [constructor]'), 'p', '')).toThrow(/unknown capability/);
+		expect(() => parsePolicy(text.replace('capabilities:\n', 'capabilities:\n  __proto__: { class: severe, functions: [x] }\n'), 'p', '')).toThrow(/cannot name/);
+	});
+});

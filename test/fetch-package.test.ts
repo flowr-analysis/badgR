@@ -71,3 +71,20 @@ describe('packages by name', () => {
 		]);
 	});
 });
+
+describe('damaged archives', () => {
+	test('a negative or oversized entry size is an error, not an endless loop', () => {
+		const h = new Uint8Array(1024);
+		h.set(new TextEncoder().encode('r/a.R'), 0);
+		h.set(new TextEncoder().encode('-0001000\0'), 124);
+		h[156] = 48;
+		expect(() => untar(h)).toThrow(/damaged tar archive/);
+		h.set(new TextEncoder().encode('77777777\0'), 124);
+		expect(() => untar(h)).toThrow(/damaged tar archive/);
+	});
+
+	test('a bare host is no package, as on the web page', () => {
+		expect(packageSpec('shiny.io', () => false)).toBeUndefined();
+		expect(packageSpec('data.table', () => false)).toEqual({ repo: 'cran', name: 'data.table' });
+	});
+});

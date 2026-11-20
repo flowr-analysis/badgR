@@ -135,11 +135,16 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 	if(!originsRaw || typeof originsRaw !== 'object') {
 		fail(file, 'origins is required');
 	}
-	const origins: Record<string, string[]> = {};
-	if(NoOrigin in originsRaw) {
+	const origins: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+	if(Object.hasOwn(originsRaw, NoOrigin)) {
 		fail(file, `origins.${NoOrigin}: the name is reserved for findings without any traced value`);
 	}
 	const seenTypes = new Map<string, string>();
+	for(const name of [...Object.keys(originsRaw), ...Object.keys((raw.capabilities ?? {}) as object)]) {
+		if(name === '__proto__' || name === 'constructor' || name === 'prototype') {
+			fail(file, `${name} cannot name an origin class or a capability`);
+		}
+	}
 	for(const [cls, types] of Object.entries(originsRaw)) {
 		origins[cls] = strings(file, `origins.${cls}`, types, true);
 		for(const t of origins[cls]) {
@@ -151,7 +156,7 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 		}
 	}
 	const fallbackOrigin = str(file, 'fallbackOrigin', raw.fallbackOrigin);
-	if(!(fallbackOrigin in origins)) {
+	if(!Object.hasOwn(origins, fallbackOrigin)) {
 		fail(file, `fallbackOrigin ${fallbackOrigin} is no origin class`);
 	}
 
@@ -159,7 +164,7 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 	if(!capsRaw || typeof capsRaw !== 'object') {
 		fail(file, 'capabilities is required');
 	}
-	const capabilities: Record<string, CapabilitySpec> = {};
+	const capabilities: Record<string, CapabilitySpec> = Object.create(null) as Record<string, CapabilitySpec>;
 	const classes = new Set<string>();
 	for(const [name, c] of Object.entries(capsRaw)) {
 		const where = `capabilities.${name}`;
@@ -176,7 +181,7 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 			unlessOrigins:   c?.unlessOrigins === undefined ? undefined : strings(file, `${where}.unlessOrigins`, c.unlessOrigins)
 		};
 		for(const o of spec.unlessOrigins ?? []) {
-			if(!(o in origins)) {
+			if(!Object.hasOwn(origins, o)) {
 				fail(file, `${where}.unlessOrigins: unknown origin class ${o}`);
 			}
 		}
@@ -237,13 +242,13 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 				}
 			}
 			for(const c of rule.capabilities ?? []) {
-				if(!(c in capabilities)) {
+				if(!Object.hasOwn(capabilities, c)) {
 					fail(file, `${w}.capabilities: unknown capability ${c}`);
 				}
 			}
 			for(const o of rule.origins ?? []) {
 				/* `none` matches findings flowR traced no value for, such as calls without arguments */
-				if(o !== NoOrigin && !(o in origins)) {
+				if(o !== NoOrigin && !Object.hasOwn(origins, o)) {
 					fail(file, `${w}.origins: unknown origin class ${o}`);
 				}
 			}

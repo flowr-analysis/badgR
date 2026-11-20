@@ -9,7 +9,7 @@
  * text of its line), not its line number.
  */
 import type { Report } from './core';
-import { findingKey, reviewSummary } from './review';
+import { reviewSummary } from './review';
 import type { Finding, LintResult } from './tiers';
 
 export const SarifSchema = 'https://json.schemastore.org/sarif-2.1.0.json';
@@ -67,6 +67,11 @@ export function parseAt(at: string): { kind: 'f', file: string, line: string, ca
 	return undefined;
 }
 
+/** the text of a line as the fingerprints see it: without leading, trailing, and repeated white space */
+function normalizeLine(text: string | undefined): string {
+	return (text ?? '').trim().replace(/\s+/g, ' ');
+}
+
 const Level: Record<string, 'error' | 'warning' | 'note'> = { severe: 'error', outward: 'warning', other: 'note' };
 
 function region(loc: readonly [number, number, number, number] | undefined): Record<string, number> | undefined {
@@ -74,11 +79,18 @@ function region(loc: readonly [number, number, number, number] | undefined): Rec
 	return loc === undefined ? undefined : { startLine: loc[0], startColumn: loc[1], endLine: loc[2], endColumn: loc[3] + 1 };
 }
 
+/** a relative path as a URI reference: each segment encoded, so `#` and `?` stay part of the name */
+export function fileUri(file: string): string {
+	return file.split('/').map(encodeURIComponent).join('/');
+}
+
 function location(file: string | undefined, loc: readonly [number, number, number, number] | undefined): Record<string, unknown>[] {
-	if(file === undefined && loc === undefined) {
+	/* a physical location needs a file; a region without one (or before line 1) says nothing */
+	if(file === undefined || file === '') {
 		return [];
 	}
-	return [{ physicalLocation: { ...(file !== undefined ? { artifactLocation: { uri: encodeURI(file), uriBaseId: 'SRCROOT' } } : {}), ...(loc ? { region: region(loc) } : {}) } }];
+	const valid = loc !== undefined && loc[0] >= 1 && loc[1] >= 1 && loc[2] >= loc[0];
+	return [{ physicalLocation: { artifactLocation: { uri: fileUri(file), uriBaseId: 'SRCROOT' }, ...(valid ? { region: region(loc) } : {}) } }];
 }
 
 function originWords(f: Finding): string {
@@ -126,7 +138,7 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 			level:     Level[f.class] ?? 'warning',
 			message:   { text: `${f.call} ${cap?.description ?? f.capability}${f.via === 'package' ? ` inside the package${f.through ? ` (through ${f.through})` : ''}` : ''}, with ${originWords(f)}.` },
 			locations: location(file, f.loc),
-			partialFingerprints: { 'badgrFinding/v1': fingerprint(findingKey({ ...f, file }, lineText)) },
+			partialFingerprints: { 'badgrFinding/v1': fingerprint(JSON.stringify([file ?? '', f.call, f.capability, f.via, normalizeLine(lineText)])) },
 			...(link ? { hostedViewerUri: link } : {}),
 			...(suppressed ? { suppressions: [{ kind: 'external', status: 'accepted', ...(f.review?.note ? { justification: f.review.note } : {}) }] } : {}),
 			properties: {
@@ -155,11 +167,11 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 				level:     'warning',
 				message:   { text: x.message },
 				locations: location(file, x.loc),
-				partialFingerprints: { 'badgrLint/v1': fingerprint([l.rule, file ?? '', x.message, (lineText ?? '').trim().replace(/\s+/g, ' ')].join('|')) },
+				partialFingerprints: { 'badgrLint/v1': fingerprint(JSON.stringify([l.rule, file ?? '', x.message, normalizeLine(lineText)])) },
 				...(link ? { hostedViewerUri: link } : {}),
-				...(x.quickFix?.length ? { fixes: x.quickFix.map(q => ({
+				...(x.quickFix?.length && opts.fileOf(x.file) ? { fixes: x.quickFix.map(q => ({
 					description:     { text: q.description },
-					artifactChanges: [{ artifactLocation: { uri: encodeURI(opts.fileOf(q.file ?? x.file) ?? ''), uriBaseId: 'SRCROOT' },
+					artifactChanges: [{ artifactLocation: { uri: fileUri(opts.fileOf(q.file ?? x.file) ?? ''), uriBaseId: 'SRCROOT' },
 						replacements: [{ deletedRegion: region(q.loc), ...(q.replacement !== undefined ? { insertedContent: { text: q.replacement } } : {}) }] }]
 				})) } : {}),
 				...(x.certainty ? { properties: { certainty: x.certainty } } : {})

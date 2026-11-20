@@ -9,6 +9,9 @@ import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { MetaFilePattern, RFilePattern } from './core';
 
+/** the top-level domains a bare `name.tld` most likely means, rather than a package such as `data.table` (as in web/sources.ts) */
+export const Hosts = /\.(com|org|net|io|dev|app|edu|gov|de|uk|fr|ch|at|nl|eu|info|me|co|ai|sh|page|site|xyz)$/i;
+
 export interface PackageSpec {
 	readonly repo:     'cran' | 'bioc'
 	readonly name:     string
@@ -24,8 +27,8 @@ export function packageSpec(target: string, exists: (p: string) => boolean = fs.
 	if(m === null) {
 		return undefined;
 	}
-	/* a bare word is a path if it exists or looks like a file name */
-	if(m[1] === undefined && m[3] === undefined && (exists(target) || /\.(R|r|Rmd|rmd|qmd|zip)$/.test(m[2]))) {
+	/* a bare word is a path if it exists or looks like a file name or a host, as the web page reads it */
+	if(m[1] === undefined && m[3] === undefined && (exists(target) || /\.(R|r|Rmd|rmd|qmd|zip)$/.test(m[2]) || Hosts.test(m[2]))) {
 		return undefined;
 	}
 	return { repo: (m[1]?.toLowerCase() ?? 'cran') as 'cran' | 'bioc', name: m[2], ...(m[3] ? { version: m[3] } : {}) };
@@ -51,6 +54,10 @@ export function untar(data: Uint8Array): { path: string, content: Uint8Array }[]
 			break;
 		}
 		const size = parseInt(text(at + 124, 12).trim() || '0', 8);
+		/* a damaged header would not move on, or read past the end */
+		if(!Number.isInteger(size) || size < 0 || at + 512 + size > data.length) {
+			throw new Error(`damaged tar archive: an entry at byte ${at} has size ${text(at + 124, 12).trim()}`);
+		}
 		const type = String.fromCharCode(data[at + 156] || 48);
 		const prefix = text(at + 345, 155);
 		const body = data.subarray(at + 512, at + 512 + size);
@@ -75,7 +82,7 @@ export function untar(data: Uint8Array): { path: string, content: Uint8Array }[]
 
 /** where downloaded packages are kept */
 export function packageCache(): string {
-	return path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), '.cache'), 'badgr', 'packages');
+	return path.resolve(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'badgr', 'packages');
 }
 
 /**
@@ -96,7 +103,8 @@ export async function fetchPackage(p: PackageSpec, log: (msg: string) => void = 
 			? `${packageLabel(p)}: no such package${p.version ? ' or version' : ''} on github.com/${p.repo} (${url} answered 404)`
 			: `${packageLabel(p)}: ${url} answered ${res.status}`);
 	}
-	const files = untar(gunzipSync(new Uint8Array(await res.arrayBuffer())));
+	/* at most 1 GiB unpacked: a small archive must not unpack to more than the memory has */
+	const files = untar(gunzipSync(new Uint8Array(await res.arrayBuffer()), { maxOutputLength: 1 << 30 }));
 	fs.rmSync(dir, { recursive: true, force: true });
 	fs.mkdirSync(dir, { recursive: true });
 	let kept = 0;

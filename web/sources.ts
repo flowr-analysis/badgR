@@ -3,7 +3,7 @@
  * a single file behind a URL, or a GitHub repository. Everything is read into memory; the only requests
  * are the ones for the URL or repository the user typed, and they only download.
  */
-import { unzipSync, strFromU8, inflateSync } from 'fflate';
+import { unzipSync, strFromU8, Inflate } from 'fflate';
 import { unpackFromUrl } from '@eagleoutice/flowr/util/text/url-encoding';
 import type { SourceFile } from './protocol';
 
@@ -15,6 +15,29 @@ export const MaxFiles = 2000;
 export const MaxBytes = 30 * 1024 * 1024;
 
 export class SourceError extends Error {}
+
+/** inflates the data of a link, at most `max` bytes: a link of a megabyte could otherwise unpack to gigabytes */
+export function inflateLimited(data: Uint8Array, max = MaxBytes): Uint8Array {
+	const parts: Uint8Array[] = [];
+	let size = 0;
+	const inflate = new Inflate(chunk => {
+		size += chunk.length;
+		if(size > max) {
+			throw new SourceError(`the data in this link unpacks to more than ${Math.round(max / 1e6)} MB`);
+		}
+		parts.push(chunk);
+	});
+	for(let at = 0; at < data.length; at += 16384) {
+		inflate.push(data.subarray(at, at + 16384), at + 16384 >= data.length);
+	}
+	const out = new Uint8Array(size);
+	let at = 0;
+	for(const p of parts) {
+		out.set(p, at);
+		at += p.length;
+	}
+	return out;
+}
 
 function keep(path: string): boolean {
 	return Wanted.test(path) && !Skipped.test(path);
@@ -111,6 +134,8 @@ export async function fromDrop(items: DataTransferItemList): Promise<SourceFile[
 interface GitHubTarget { owner: string, repo: string, ref?: string, path: string, blob: boolean }
 
 export function parseGitHub(url: string): GitHubTarget | undefined {
+	/* the host in any case, the path as it is */
+	url = url.trim().replace(/^(https?:\/\/)([^/]+)/i, (_, scheme: string, host: string) => scheme.toLowerCase() + host.toLowerCase());
 	const m = /^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/(tree|blob)\/([^/]+)(?:\/(.*))?)?\/?(?:[?#].*)?$/.exec(url.trim());
 	if(m === null) {
 		return undefined;
@@ -206,7 +231,7 @@ function fromOwnLink(url: string): SourceFile[] | undefined {
 	const z = q.get('z');
 	if(z !== null) {
 		const bin = atob(z.replace(/-/g, '+').replace(/_/g, '/'));
-		return [{ path: 'script.R', content: strFromU8(inflateSync(Uint8Array.from(bin, c => c.charCodeAt(0)))) }];
+		return [{ path: 'script.R', content: strFromU8(inflateLimited(Uint8Array.from(bin, c => c.charCodeAt(0)))) }];
 	}
 	const code = q.get('code');
 	return code === null ? undefined : [{ path: 'script.R', content: code }];
@@ -319,6 +344,9 @@ export function normalizeUrl(url: string): string | undefined {
 	if(t.length === 0) {
 		return undefined;
 	}
+	if(/^(cran|bioc):\s*$/i.test(t) || /^[A-Za-z][\w.]*@$/.test(t)) {
+		return undefined;
+	}
 	const pkg = /^(?:(cran|bioc):\s*)?([A-Za-z][A-Za-z0-9.]*[A-Za-z0-9])(?:@([\w.-]+))?$/i.exec(t);
 	if(pkg !== null && (pkg[1] !== undefined || pkg[3] !== undefined || (PackageName.test(pkg[2]) && !Hosts.test(pkg[2])))) {
 		if(pkg[1]?.toLowerCase() === 'bioc') {
@@ -377,14 +405,23 @@ function ownLinkUrl(url: string): string | undefined {
  * file, or gist, a GitLab project, a CRAN package (from its GitHub mirror), or a zip archive or R file
  * on a server that allows downloads from other sites.
  */
-export async function fromUrl(url: string, progress: (msg: string) => void = () => {}): Promise<SourceFile[]> {
-	const kind = describeUrl(url)?.kind;
+export async function fromUrl(url: string, progress: (msg: string) => void = () => {}, depth = 0): Promise<SourceFile[]> {
 	url = normalizeUrl(url) ?? url;
-	if(kind === 'playground') {
-		return fromPlaygroundLink(url) as SourceFile[];
+	/* a link of this page to a repository or file: what it points to, before anything else */
+	const inner = /#(.*&)?(z|code)=/.test(url) ? undefined : ownLinkUrl(url);
+	if(inner !== undefined) {
+		if(depth > 4) {
+			throw new SourceError('this link points to a link to a link: give the repository or file itself');
+		}
+		return fromUrl(inner, progress, depth + 1);
 	}
-	if(kind === 'own') {
-		return fromOwnLink(url) as SourceFile[];
+	const kind = describeUrl(url)?.kind;
+	if(kind === 'playground' || kind === 'own') {
+		const files = kind === 'playground' ? fromPlaygroundLink(url) : fromOwnLink(url);
+		if(files === undefined) {
+			throw new SourceError('this link carries no code');
+		}
+		return files;
 	}
 	if(kind === 'gist') {
 		const id = /gist\.github\.com\/(?:[\w-]+\/)?([0-9a-f]+)/.exec(url)?.[1];
@@ -392,10 +429,6 @@ export async function fromUrl(url: string, progress: (msg: string) => void = () 
 			throw new SourceError('not a gist url');
 		}
 		return fromGist(id, progress);
-	}
-	const inner = ownLinkUrl(url);
-	if(inner !== undefined) {
-		return fromUrl(inner, progress);
 	}
 	if(kind === 'cran') {
 		const pkg = cranPackage(url) as { name: string, version?: string };

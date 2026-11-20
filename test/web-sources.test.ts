@@ -1,8 +1,8 @@
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { describe, expect, test } from 'vitest';
-import { zipSync, strToU8 } from 'fflate';
+import { deflateSync, zipSync, strToU8 } from 'fflate';
 import { packagesNamed } from '../web/packages';
-import { cranPackage, describeUrl, fromUrl, fromZip, normalizeUrl, parseGitHub, stripCommonRoot, uniquePaths } from '../web/sources';
+import { cranPackage, describeUrl, fromUrl, inflateLimited, fromZip, normalizeUrl, parseGitHub, stripCommonRoot, uniquePaths } from '../web/sources';
 
 describe('what the page reads', () => {
 	test.each([
@@ -132,6 +132,32 @@ describe('what the page reads', () => {
 			} finally {
 				globalThis.fetch = real;
 			}
+		});
+
+		test('a badgR link to a badgR or playground link reads the inner code; a link of links ends', async() => {
+			const code = Buffer.from(deflateSync(strToU8('system(readline())'))).toString('base64url');
+			const inner = `https://x.org/badgr/#z=${code}`;
+			expect(await fromUrl(`https://x.org/badgr/#url=${encodeURIComponent(inner)}`)).toEqual([{ path: 'script.R', content: 'system(readline())' }]);
+			const pg = Playground.link({ code: 'eval(1)', name: 'a.R' });
+			expect(await fromUrl(`https://x.org/badgr/#url=${encodeURIComponent(pg)}`)).toEqual([{ path: 'a.R', content: 'eval(1)' }]);
+			let deep = inner;
+			for(let i = 0; i < 7; i++) {
+				deep = `https://x.org/badgr/#url=${encodeURIComponent(deep)}`;
+			}
+			await expect(fromUrl(deep)).rejects.toThrow(/link to a link/);
+		});
+
+		test('GitHub in any case of its host, and no package for a half name', () => {
+			expect(describeUrl('https://GitHub.COM/a/b/')?.kind).toBe('github');
+			expect(describeUrl('GitHub.com/a/b')?.kind).toBe('github');
+			expect(describeUrl('glue@')).toBeUndefined();
+			expect(describeUrl('cran:')).toBeUndefined();
+		});
+
+		test('the data of a link unpacks to a bounded size', () => {
+			const bomb = deflateSync(new Uint8Array(8 << 20));
+			expect(() => inflateLimited(bomb, 1 << 20)).toThrow(/more than/);
+			expect(inflateLimited(deflateSync(strToU8('abc')))).toEqual(strToU8('abc'));
 		});
 
 		test('explains that a running Shiny app does not hand out its code', async() => {

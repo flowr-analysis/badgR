@@ -88,3 +88,18 @@ describe('badge marks', () => {
 		expect(both).not.toContain('id="badgr-gold-s"');
 	});
 });
+
+describe('SARIF edge cases', () => {
+	test('a file name with # or ? stays one name, and no location without a file or a valid line', () => {
+		const odd = report([{ ...finding, file: '/p/a#b?.R' }, { ...finding, id: '8', file: undefined }, { ...finding, id: '9', loc: [0, 0, 0, 0] }]);
+		const res = (sarifLog([odd], { fileOf: f => f?.replace('/p/', ''), lineOf: () => undefined }) as { runs: { results: { locations: { physicalLocation: { artifactLocation: { uri: string }, region?: unknown } }[] }[] }[] }).runs[0].results;
+		expect(res[0].locations[0].physicalLocation.artifactLocation.uri).toBe('a%23b%3F.R');
+		expect(res[1].locations).toEqual([]);
+		expect(res[2].locations[0].physicalLocation.region).toBeUndefined();
+	});
+
+	test('fingerprints of different findings do not collide through the separator', () => {
+		const fp = (f: Finding) => (sarifLog([report([f])], { fileOf: x => x, lineOf: () => 'x' }) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgrFinding/v1'];
+		expect(fp({ ...finding, file: 'a|b', call: 'c' })).not.toBe(fp({ ...finding, file: 'a', call: 'b|c' }));
+	});
+});
