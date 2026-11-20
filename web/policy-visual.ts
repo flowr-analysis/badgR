@@ -5,7 +5,8 @@
  * tags, trusted functions, and extra linting rules. Every edit goes back into the YAML, which keeps its
  * comments.
  */
-import { parseDocument, isSeq, isMap, type Document } from 'yaml';
+import { parse, parseDocument, isSeq, isMap, type Document } from 'yaml';
+import DefaultPolicy from '../policies/default.yaml';
 import { FileRoles, NoOrigin, parsePolicy, type ForbidRule, type Policy } from '../src/policy-core';
 import type { PolicyVocabulary } from './protocol';
 
@@ -192,11 +193,47 @@ function option(value: string, text = value): HTMLOptionElement {
 	return o;
 }
 
+/** a text field that suggests values (a `datalist`) and writes on Enter or when it loses focus */
+function addField(placeholder: string, title: string, suggestions: readonly string[], add: (v: string) => void): HTMLInputElement {
+	const input = el('input');
+	input.placeholder = placeholder;
+	input.title = title;
+	if(suggestions.length > 0) {
+		const list = el('datalist');
+		list.id = `vlist-${Math.random().toString(36).slice(2)}`;
+		list.append(...suggestions.map(x => option(x)));
+		input.setAttribute('list', list.id);
+		queueMicrotask(() => input.parentElement?.append(list));
+	}
+	input.addEventListener('keydown', ev => {
+		if(ev.key === 'Enter' && input.value.trim()) {
+			ev.preventDefault();
+			add(input.value.trim());
+		}
+	});
+	return input;
+}
+
+/** a regular expression that is valid, or the reason it is not */
+function regexError(r: string): string | undefined {
+	try {
+		new RegExp(r);
+		return undefined;
+	} catch(e) {
+		return e instanceof Error ? e.message : String(e);
+	}
+}
+
+/** what the page can suggest besides the policy: the calls of the last report, as `^pkg::fn$` */
+export interface VisualContext {
+	readonly calls?: readonly string[]
+}
+
 /** which tiers are unfolded, kept across redraws */
 const openTiers = new Set<number>([0]);
 
 /** draws the forms into `root`; `change` receives the new YAML */
-export function renderVisual(root: HTMLElement, text: string, vocabulary: PolicyVocabulary | undefined, change: (yaml: string) => void): void {
+export function renderVisual(root: HTMLElement, text: string, vocabulary: PolicyVocabulary | undefined, change: (yaml: string) => void, context: VisualContext = {}): void {
 	let policy: Policy;
 	try {
 		policy = parsePolicy(text, 'policy', '');
@@ -212,6 +249,35 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		change(doc.toString({ lineWidth: 0, flowCollectionPadding: false }));
 	};
 	const ruleDocs = (r: string) => vocabulary?.lintRules.find(x => x.name === r);
+	/* what differs from the default policy, so each part can go back to it */
+	const defaults = parse(DefaultPolicy) as Record<string, unknown>;
+	const now = parse(text) as Record<string, unknown>;
+	const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+	const resetButton = (what: string, differs: boolean, reset: (d: Document) => void): HTMLElement[] => {
+		if(!differs) {
+			return [];
+		}
+		const b = el('button', 'vreset', 'reset');
+		b.type = 'button';
+		b.title = `set ${what} back to the default policy`;
+		b.addEventListener('click', ev => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			edit(reset);
+		});
+		return [b];
+	};
+	const resetKeys = (what: string, keys: readonly string[]) => resetButton(what, keys.some(k => !same(now[k], defaults[k])), d => {
+		for(const k of keys) {
+			if(defaults[k] === undefined) {
+				d.delete(k);
+			} else {
+				d.set(k, flowed(d, defaults[k]));
+			}
+		}
+	});
+	const callSuggestions = [...new Set((context.calls ?? []).map(c => `^${c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))].sort();
+	const fnSuggestions = [...new Set((context.calls ?? []).map(c => `^${(c.split('::').pop() ?? c).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))].sort();
 
 	const legend = el('p', 'hint legend');
 	const key = (s: string) => el('span', `cell-key v-${s}`, Label[s]);
@@ -228,7 +294,10 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		color.title = 'badge color';
 		color.addEventListener('click', ev => ev.stopPropagation());
 		color.addEventListener('change', () => edit(d => d.setIn(['tiers', ti, 'color'], color.value)));
-		head.append(color, el('strong', '', t.name), el('span', 'hint', t.summary ?? ''));
+		const tiersRaw = (now.tiers ?? []) as Record<string, unknown>[];
+		const def = ((defaults.tiers ?? []) as Record<string, unknown>[]).find(x => x.name === t.name);
+		head.append(color, el('strong', '', t.name), el('span', 'hint', t.summary ?? ''),
+			...resetButton(`the tier ${t.name}`, def !== undefined && !same(tiersRaw[ti], def), d => d.setIn(['tiers', ti], flowed(d, def))));
 		box.append(head);
 
 		/* the grid shows the rules of the shipped files; rules naming their own files stay as written */
@@ -303,12 +372,27 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 			v => edit(d => d.setIn(['tiers', ti, 'lint'], flowed(d, [...t.lint, v])))));
 		box.append(lint);
 
-		for(const [key, label, value] of [['summary', 'In one line', t.summary ?? ''], ['review', 'Review left', t.review]] as const) {
+		for(const [key, label, value, hint] of [
+			['name', 'Name', t.name, 'the tier on the badge; --min-tier takes it'],
+			['summary', 'In one line', t.summary ?? '', 'shown next to the badge'],
+			['description', 'In full', t.description ?? '', 'what the tier asks for, in the list of badges'],
+			['review', 'Review left', t.review, 'what a person still reviews at this tier']] as const) {
 			const row = el('label', 'vrow');
 			row.append(el('span', 'vlabel', label));
 			const input = el('input');
 			input.value = value;
-			input.addEventListener('change', () => edit(d => d.setIn(['tiers', ti, key], input.value)));
+			input.title = hint;
+			input.addEventListener('change', () => {
+				const v = input.value.trim();
+				/* a tier needs a name of its own; the others may be empty */
+				if(key === 'name' && (v === '' || policy.tiers.some((x, i) => i !== ti && x.name === v))) {
+					input.value = t.name;
+					input.setCustomValidity(v === '' ? 'a tier needs a name' : `there is a tier ${v} already`);
+					input.reportValidity();
+					return;
+				}
+				edit(d => v === '' && key !== 'review' ? d.deleteIn(['tiers', ti, key]) : d.setIn(['tiers', ti, key], v));
+			});
 			row.append(input);
 			box.append(row);
 		}
@@ -320,12 +404,49 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	settings.open = settingsOpen;
 	settings.append(el('summary', '', 'Policy settings'));
 
+	/* the name and description reports show */
+	const ng = el('div', 'vblock');
+	const nh = el('h4');
+	nh.append('Policy ', el('span', 'hint', 'its name and description in reports'), ...resetKeys('the name and description', ['name', 'description']));
+	ng.append(nh);
+	for(const [key, label, value] of [['name', 'Name', policy.name], ['description', 'Description', policy.description ?? '']] as const) {
+		const row = el('label', 'vrow');
+		row.append(el('span', 'vlabel', label));
+		const input = el('input');
+		input.value = value;
+		input.addEventListener('change', () => edit(d => input.value.trim() === '' ? d.delete(key) : d.set(key, input.value.trim())));
+		row.append(input);
+		ng.append(row);
+	}
+	/* the tier of code no tier fits */
+	const fbt = el('div', 'vblock');
+	const fbh = el('h4');
+	fbh.append('Fallback tier ', el('span', 'hint', 'for code that meets no tier, or that flowR could not analyze'), ...resetKeys('the fallback tier', ['fallbackTier']));
+	fbt.append(fbh);
+	const fbrow = el('div', 'vrow');
+	const fbColor = el('input');
+	fbColor.type = 'color';
+	fbColor.value = /^#[0-9a-f]{6}$/i.test(policy.fallbackTier.color) ? policy.fallbackTier.color : '#6b6b6b';
+	fbColor.title = 'badge color';
+	fbColor.className = 'vcolor';
+	fbColor.addEventListener('change', () => edit(d => d.setIn(['fallbackTier', 'color'], fbColor.value)));
+	const fbName = el('input');
+	fbName.value = policy.fallbackTier.name;
+	fbName.title = 'its name on the badge';
+	fbName.addEventListener('change', () => fbName.value.trim() && edit(d => d.setIn(['fallbackTier', 'name'], fbName.value.trim())));
+	const fbReview = el('input');
+	fbReview.value = policy.fallbackTier.review;
+	fbReview.title = 'what is left to review';
+	fbReview.addEventListener('change', () => edit(d => d.setIn(['fallbackTier', 'review'], fbReview.value.trim() || 'full')));
+	fbrow.append(el('span', 'vlabel', 'Name, review'), fbColor, fbName, fbReview);
+	fbt.append(fbrow);
+
 	/* origins: each flowR input type in one class */
 	const types = [...new Set([...vocabulary?.inputTypes ?? [], ...Object.values(policy.origins).flat()])];
 	const classOf = (ty: string) => Object.entries(policy.origins).find(([, v]) => v.includes(ty))?.[0];
 	const og = el('div', 'vblock');
 	const oh = el('h4');
-	oh.append('Origins ', el('span', 'hint', 'per flowR '), link(Docs.inputSources, 'input type'));
+	oh.append('Origins ', el('span', 'hint', 'per flowR '), link(Docs.inputSources, 'input type'), ...resetKeys('the origins', ['origins', 'fallbackOrigin']));
 	og.append(oh);
 	const ot = el('div', 'vtypes');
 	for(const ty of types) {
@@ -359,7 +480,7 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	/* capabilities: class and flowR tags */
 	const cg = el('div', 'vblock');
 	const ch = el('h4');
-	ch.append('Capabilities ', el('span', 'hint', 'sink class and flowR '), link(Docs.functionInfo, 'tags'));
+	ch.append('Capabilities ', el('span', 'hint', 'sink class, flowR '), link(Docs.functionInfo, 'tags'), el('span', 'hint', ', and functions (regexes, with :: on pkg::fn)'), ...resetKeys('the capabilities', ['capabilities']));
 	cg.append(ch);
 	const classes = [...new Set(['severe', 'outward', 'other', ...shape.classes])];
 	for(const [name, spec] of Object.entries(policy.capabilities)) {
@@ -377,31 +498,64 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		row.append(picker('+ tag', (vocabulary?.tags ?? []).filter(t => !spec.tags?.includes(t)).map(t => ({ value: t })),
 			t => edit(d => d.setIn(['capabilities', name, 'tags'], flowed(d, [...spec.tags ?? [], t])))));
 		cg.append(row);
+		/* the functions it matches by name, and the ones it leaves out again */
+		for(const [key, label, list] of [['functions', 'functions', spec.functions ?? []], ['exclude', 'except', spec.exclude ?? []]] as const) {
+			const frow = el('div', 'vrow vcap-fns');
+			frow.append(el('span', 'vlabel', label), ...chips(list, 'regex-chip', () => undefined, () => undefined,
+				x => edit(d => {
+					const next = list.filter(y => y !== x);
+					/* a capability must match something: the last function goes only with tags or properties left */
+					if(key === 'functions' && next.length === 0 && !spec.tags?.length && !spec.callProps?.length) {
+						return;
+					}
+					if(next.length === 0) {
+						d.deleteIn(['capabilities', name, key]);
+					} else {
+						d.setIn(['capabilities', name, key], flowed(d, next));
+					}
+				})));
+			const add = addField('^fn$ and Enter', key === 'functions' ? 'a regular expression on the function name, or on pkg::fn if it has ::' : 'functions that do not have this capability after all',
+				fnSuggestions.filter(x => !list.includes(x)), v => {
+					const bad = regexError(v);
+					if(bad !== undefined) {
+						add.setCustomValidity(bad);
+						add.reportValidity();
+						return;
+					}
+					edit(d => d.setIn(['capabilities', name, key], flowed(d, [...list, v])));
+				});
+			add.addEventListener('input', () => add.setCustomValidity(''));
+			frow.append(add);
+			cg.append(frow);
+		}
 	}
 
 	/* trusted functions and extra linting rules */
 	const tg = el('div', 'vblock');
 	const th = el('h4');
-	th.append('Trusted ', el('span', 'hint', 'regexes on pkg::fn; their package-internal sinks do not count'));
+	th.append('Trusted ', el('span', 'hint', 'regexes on pkg::fn; their package-internal sinks do not count'), ...resetKeys('the trusted functions', ['trusted']));
 	tg.append(th);
 	const trow = el('div', 'vrow');
 	trow.append(...chips(policy.trusted, 'regex-chip', () => undefined, () => undefined,
 		x => edit(d => d.set('trusted', flowed(d, policy.trusted.filter(y => y !== x))))));
-	const add = el('input');
-	add.placeholder = '^pkg::fn$ and Enter';
-	add.addEventListener('keydown', ev => {
-		if(ev.key === 'Enter' && add.value.trim()) {
-			const v = add.value.trim();
+	const add = addField('^pkg::fn$ and Enter', 'a regular expression on pkg::fn: calls into these package functions do not count what happens inside them',
+		callSuggestions.filter(x => !policy.trusted.includes(x)), v => {
+			const bad = regexError(v);
+			if(bad !== undefined) {
+				add.setCustomValidity(bad);
+				add.reportValidity();
+				return;
+			}
 			edit(d => d.set('trusted', flowed(d, [...policy.trusted, v])));
-		}
-	});
+		});
+	add.addEventListener('input', () => add.setCustomValidity(''));
 	trow.append(add);
 	tg.append(trow);
 
 	/* which files ship, from flowR's file roles */
 	const sg = el('div', 'vblock');
 	const sh = el('h4');
-	sh.append('Shipped files ', el('span', 'hint', 'tiers count findings in these flowR file roles only'));
+	sh.append('Shipped files ', el('span', 'hint', 'tiers count findings in these flowR file roles only'), ...resetKeys('the shipped files', ['shipped']));
 	sg.append(sh);
 	const srow = el('div', 'vrow');
 	for(const role of FileRoles) {
@@ -416,25 +570,28 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	/* calls that never become findings */
 	const ag = el('div', 'vblock');
 	const ah = el('h4');
-	ah.append('Allowed calls ', el('span', 'hint', 'regexes on pkg::fn, never findings; use sparingly'));
+	ah.append('Allowed calls ', el('span', 'hint', 'regexes on pkg::fn, never findings; use sparingly'), ...resetKeys('the allowed calls', ['allow']));
 	ag.append(ah);
 	const arow = el('div', 'vrow');
 	arow.append(...chips(policy.allow, 'regex-chip', () => undefined, () => undefined,
 		x => edit(d => d.set('allow', flowed(d, policy.allow.filter(y => y !== x))))));
-	const addAllow = el('input');
-	addAllow.placeholder = '^pkg::fn$ and Enter';
-	addAllow.addEventListener('keydown', ev => {
-		if(ev.key === 'Enter' && addAllow.value.trim()) {
-			const v = addAllow.value.trim();
+	const addAllow = addField('^pkg::fn$ and Enter', 'a regular expression on pkg::fn (or fn): such calls never become findings',
+		callSuggestions.filter(x => !policy.allow.includes(x)), v => {
+			const bad = regexError(v);
+			if(bad !== undefined) {
+				addAllow.setCustomValidity(bad);
+				addAllow.reportValidity();
+				return;
+			}
 			edit(d => d.set('allow', flowed(d, [...policy.allow, v])));
-		}
-	});
+		});
+	addAllow.addEventListener('input', () => addAllow.setCustomValidity(''));
 	arow.append(addAllow);
 	ag.append(arow);
 
 	const rg = el('div', 'vblock');
 	const rh = el('h4');
-	rh.append('Reported ', el('span', 'hint', 'extra '), link(Docs.linter, 'linting rules'), el('span', 'hint', ', no effect on the tier'));
+	rh.append('Reported ', el('span', 'hint', 'extra '), link(Docs.linter, 'linting rules'), el('span', 'hint', ', no effect on the tier'), ...resetKeys('the reported rules', ['report']));
 	rg.append(rh);
 	const rrow = el('div', 'vrow');
 	rrow.append(...chips(policy.report, 'rule-chip', r => ruleDocs(r)?.docs ?? Docs.linter, r => ruleDocs(r)?.about,
@@ -445,7 +602,7 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 	/* time limits */
 	const lg = el('div', 'vblock');
 	const lh = el('h4');
-	lh.append('Time limits ', el('span', 'hint', 'seconds'));
+	lh.append('Time limits ', el('span', 'hint', 'seconds'), ...resetKeys('the time limits', ['lintTimeout', 'lintReadTimeout', 'timeout']));
 	lg.append(lh);
 	const limits: readonly { key: 'lintTimeout' | 'lintReadTimeout' | 'timeout', label: string, hint: string, value: number | undefined }[] = [
 		{ key: 'lintTimeout', label: 'Per linting rule', hint: 'stopped after, counts as not run', value: policy.lintTimeout },
@@ -477,6 +634,6 @@ export function renderVisual(root: HTMLElement, text: string, vocabulary: Policy
 		lg.append(row);
 	}
 
-	settings.append(lg, sg, og, cg, tg, ag, rg);
+	settings.append(ng, lg, sg, og, cg, tg, ag, rg, fbt);
 	root.replaceChildren(legend, ...tiers, settings);
 }

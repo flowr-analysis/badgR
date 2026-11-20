@@ -73,23 +73,24 @@
 
     <div class="panel" data-panel="upload" hidden>
       <label class="drop" id="drop">
-        <input type="file" id="file-input" multiple accept=".R,.r,.Rmd,.rmd,.qmd,.zip,DESCRIPTION">
+        <input type="file" id="file-input" multiple accept=".R,.r,.Rmd,.rmd,.qmd,.zip,DESCRIPTION,NAMESPACE,.Rprofile">
         <span class="drop-main">Drop R files, a folder, or a .zip</span>
         <span class="drop-sub">or click to choose</span>
       </label>
       <div class="row">
         <label class="button secondary"><input type="file" id="folder-input" webkitdirectory hidden>Choose a folder</label>
-        <span class="hint">badgR reads .R, .Rmd, .qmd, and DESCRIPTION files and skips renv and .git folders.</span>
+        <span class="hint">badgR reads .R, .Rmd, .qmd, .Rprofile, DESCRIPTION, and NAMESPACE files and skips renv and .git folders.</span>
       </div>
     </div>
 
     <div class="panel" data-panel="url" hidden>
       <form id="url-form" class="row">
-        <input type="text" id="url-input" placeholder="github.com/owner/repo, a gist, GitLab, a CRAN package, a flowR playground link, or an .R or .zip URL" required autocomplete="off" spellcheck="false">
+        <input type="text" id="url-input" list="url-packages" placeholder="github.com/owner/repo, a CRAN package such as glue or glue@1.8.0, a gist, GitLab, a flowR playground link, or an .R or .zip URL" required autocomplete="off" spellcheck="false">
+        <datalist id="url-packages"></datalist>
         <button type="submit" class="button">Fetch</button>
       </form>
       <p class="hint" id="url-note" aria-live="polite"></p>
-      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages (from their GitHub mirror), and links to the flowR playground or to this page, which carry the code in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow cross-site downloads (CORS).</p>
+      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages by name or page (<code>glue</code>, <code>glue@1.8.0</code>, <code>cran:glue</code>, from their GitHub mirror), Bioconductor packages (<code>bioc:limma</code>), and links to the flowR playground or to this page, which carry the code in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow cross-site downloads (CORS).</p>
     </div>
 
     <div class="panel" data-panel="policy" hidden>
@@ -98,12 +99,14 @@
           <button type="button" data-view="grid" aria-pressed="true">Grid</button>
           <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
         </div>
-        <button class="button secondary small" id="policy-reset">Reset</button>
+        <button class="button secondary small" id="policy-reset" title="go back to badgR's default policy (you can undo this)">Reset to default</button>
+        <button class="button secondary small" id="policy-copy" title="a link to this page with this policy; opening it loads the policy">copy policy link</button>
         <span id="policy-status" class="hint"></span>
       </div>
       <div id="policy-visual"></div>
       <div id="policy" class="editor tall" hidden></div>
-      <p class="hint">Tier changes apply at once; others need a new analysis.</p>
+      <p id="policy-note" class="hint" hidden role="status"></p>
+      <p class="hint">Tier changes apply at once; others need a new analysis. The policy stays in this browser; a link to a result carries it along.</p>
     </div>
 
     <details class="badges-box">
@@ -120,6 +123,7 @@
       <div class="start" id="start"></div>
     </div>
 
+    <div id="notice" class="shared notice" hidden role="status"></div>
     <div id="shared" class="shared" hidden></div>
 
     <div id="progress" hidden>

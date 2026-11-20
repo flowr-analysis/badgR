@@ -8,7 +8,7 @@ import { unpackFromUrl } from '@eagleoutice/flowr/util/text/url-encoding';
 import type { SourceFile } from './protocol';
 
 /** what the analysis reads: R code, R Markdown, Quarto, and the package metadata */
-export const Wanted = /(\.(R|r|Rmd|rmd|qmd)$)|(^|\/)DESCRIPTION$/;
+export const Wanted = /(\.(R|r|Rmd|rmd|qmd)$)|(^|\/)(DESCRIPTION|NAMESPACE|\.Rprofile)$/;
 /** skipped folders: package libraries and version control */
 const Skipped = /(^|\/)(\.git|renv|packrat|node_modules|\.Rproj\.user|rv\/library)\//;
 export const MaxFiles = 2000;
@@ -162,7 +162,8 @@ export async function fromGitHub(url: string, progress: (msg: string) => void = 
 			if(!res.ok) {
 				throw new SourceError(`could not download ${p} (${res.status})`);
 			}
-			files.push({ path: t.path && !t.blob ? p.slice(t.path.length + 1) : p.split('/').pop() as string, content: await res.text() });
+			/* a file by itself keeps its name, files of a folder their path below it, files of the repository their full path */
+			files.push({ path: t.blob ? p.split('/').pop() as string : t.path ? p.slice(t.path.length + 1) : p, content: await res.text() });
 			progress(`downloaded ${++done}/${paths.length} file(s)`);
 		}
 	}));
@@ -262,7 +263,7 @@ async function fromGitLab(host: string, project: string, ref: string | undefined
 }
 
 /** what a link points at, read as well as the page can: see `fromUrl` */
-export type UrlKind = 'playground' | 'own' | 'github' | 'gist' | 'gitlab' | 'cran' | 'shiny-deployment' | 'file';
+export type UrlKind = 'playground' | 'own' | 'github' | 'gist' | 'gitlab' | 'cran' | 'bioc' | 'shiny-deployment' | 'file';
 
 /** a short name for what the page will do with a link, for the input field */
 export function describeUrl(url: string): { kind: UrlKind, note: string } | undefined {
@@ -276,11 +277,21 @@ export function describeUrl(url: string): { kind: UrlKind, note: string } | unde
 	if(/#(.*&)?(z|code)=/.test(u)) {
 		return { kind: 'own', note: 'a badgR link: its code is read from the link, without any request' };
 	}
+	const inner = ownLinkUrl(u);
+	if(inner !== undefined) {
+		const d = describeUrl(inner);
+		return d === undefined ? undefined : { kind: d.kind, note: `a badgR link to ${inner}: ${d.note}` };
+	}
 	if(/^https?:\/\/gist\.github\.com\//.test(u)) {
 		return { kind: 'gist', note: 'a GitHub gist, through api.github.com' };
 	}
-	if(cranPackage(u) !== undefined) {
-		return { kind: 'cran', note: `the CRAN package ${cranPackage(u)}, from its mirror github.com/cran/${cranPackage(u)}` };
+	const cran = cranPackage(u);
+	if(cran !== undefined) {
+		return { kind: 'cran', note: `the CRAN package ${cran.name}${cran.version ? ` ${cran.version}` : ''}, from its mirror github.com/cran/${cran.name}` };
+	}
+	const bioc = biocPackage(u);
+	if(bioc !== undefined) {
+		return { kind: 'bioc', note: `the Bioconductor package ${bioc}, from its mirror github.com/bioc/${bioc}` };
 	}
 	if(parseGitHub(u) !== undefined) {
 		return { kind: 'github', note: 'a GitHub repository, through api.github.com and raw.githubusercontent.com' };
@@ -294,11 +305,26 @@ export function describeUrl(url: string): { kind: UrlKind, note: string } | unde
 	return { kind: 'file', note: 'an R file or a .zip, if the server allows downloads from other sites (CORS)' };
 }
 
-/** `owner/repo` is a GitHub repository, a missing scheme is https */
-function normalizeUrl(url: string): string | undefined {
+/** an R package name: letters, digits, and dots, starting with a letter, not ending with a dot */
+const PackageName = /^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$/;
+/** the top-level domains a bare `name.tld` most likely means, rather than a package such as `data.table` */
+const Hosts = /\.(com|org|net|io|dev|app|edu|gov|de|uk|fr|ch|at|nl|eu|info|me|co|ai|sh|page|site|xyz)$/i;
+
+/**
+ * `owner/repo` is a GitHub repository; a bare package name (`glue`, `data.table`, `glue@1.8.0`, `cran:glue`)
+ * is a CRAN package and `bioc:limma` one of Bioconductor; a missing scheme is https.
+ */
+export function normalizeUrl(url: string): string | undefined {
 	const t = url.trim();
 	if(t.length === 0) {
 		return undefined;
+	}
+	const pkg = /^(?:(cran|bioc):\s*)?([A-Za-z][A-Za-z0-9.]*[A-Za-z0-9])(?:@([\w.-]+))?$/i.exec(t);
+	if(pkg !== null && (pkg[1] !== undefined || pkg[3] !== undefined || (PackageName.test(pkg[2]) && !Hosts.test(pkg[2])))) {
+		if(pkg[1]?.toLowerCase() === 'bioc') {
+			return `https://bioconductor.org/packages/${pkg[2]}`;
+		}
+		return `https://cran.r-project.org/package=${pkg[2]}${pkg[3] ? `&version=${pkg[3]}` : ''}`;
 	}
 	if(/^[\w.-]+\/[\w.-]+$/.test(t)) {
 		return `https://github.com/${t}`;
@@ -306,11 +332,44 @@ function normalizeUrl(url: string): string | undefined {
 	return /^[a-z]+:\/\//i.test(t) ? t : `https://${t}`;
 }
 
-/** the package of a CRAN page: `cran.r-project.org/package=x`, `.../web/packages/x/...`, or `cran.dev/x` */
-function cranPackage(url: string): string | undefined {
-	return /cran\.r-project\.org\/(?:web\/)?(?:packages\/|package=)([\w.]+)/.exec(url)?.[1]
-		?? /cran\.dev\/([\w.]+)/.exec(url)?.[1]
-		?? /CRAN\.R-project\.org\/package=([\w.]+)/i.exec(url)?.[1];
+/**
+ * The package (and version, if the link names one) of a CRAN page or file: `cran.r-project.org/package=x`,
+ * `.../web/packages/x/...`, a source archive `.../src/contrib/x_1.0.tar.gz`, a mirror such as
+ * `cloud.r-project.org` or `cran.rstudio.com`, or `cran.dev/x`.
+ */
+export function cranPackage(url: string): { name: string, version?: string } | undefined {
+	const host = /^https?:\/\/(?:www\.)?(cran\.[\w.-]+|cloud\.r-project\.org|cran\.dev)(\/.*)?$/i.exec(url);
+	if(host === null) {
+		return undefined;
+	}
+	const rest = host[2] ?? '';
+	const archive = /\/src\/contrib\/(?:Archive\/[\w.]+\/)?([A-Za-z][\w.]*)_([\w.-]+)\.tar\.gz$/.exec(rest);
+	if(archive !== null) {
+		return { name: archive[1], version: archive[2] };
+	}
+	const name = /^\/(?:web\/)?(?:packages\/|package=)([A-Za-z][\w.]*[A-Za-z0-9])/i.exec(rest)?.[1]
+		?? (/^cran\.dev$/i.test(host[1]) ? /^\/([A-Za-z][\w.]*[A-Za-z0-9])/.exec(rest)?.[1] : undefined);
+	if(name === undefined) {
+		return undefined;
+	}
+	const version = /[?&]version=([\w.-]+)/.exec(rest)?.[1];
+	return { name, ...(version ? { version } : {}) };
+}
+
+/** the package of a Bioconductor page: `bioconductor.org/packages/x`, `.../packages/release/bioc/html/x.html` */
+function biocPackage(url: string): string | undefined {
+	const m = /^https?:\/\/(?:www\.)?bioconductor\.org\/packages\/(?:(?:release|devel|[\d.]+)\/bioc\/html\/)?([A-Za-z][\w.]*[A-Za-z0-9])(?:\.html)?\/?$/.exec(url);
+	return m?.[1];
+}
+
+/** the URL inside a link of this page to a fetched repository or file, `...#url=<url>` */
+function ownLinkUrl(url: string): string | undefined {
+	const hash = url.split('#')[1];
+	if(hash === undefined) {
+		return undefined;
+	}
+	const inner = new URLSearchParams(hash).get('url');
+	return inner === null || inner === url ? undefined : inner;
 }
 
 /**
@@ -334,9 +393,17 @@ export async function fromUrl(url: string, progress: (msg: string) => void = () 
 		}
 		return fromGist(id, progress);
 	}
+	const inner = ownLinkUrl(url);
+	if(inner !== undefined) {
+		return fromUrl(inner, progress);
+	}
 	if(kind === 'cran') {
-		const pkg = cranPackage(url) as string;
-		return fromGitHub(`https://github.com/cran/${pkg}`, progress);
+		const pkg = cranPackage(url) as { name: string, version?: string };
+		/* the mirror tags every released version with its number */
+		return fromGitHub(`https://github.com/cran/${pkg.name}${pkg.version ? `/tree/${pkg.version}` : ''}`, progress);
+	}
+	if(kind === 'bioc') {
+		return fromGitHub(`https://github.com/bioc/${biocPackage(url) as string}`, progress);
 	}
 	if(kind === 'shiny-deployment') {
 		throw new SourceError('This is a running Shiny app. Its server does not hand out the app\'s code, so badgR cannot read it from here. Give the GitHub or GitLab repository of the app, or upload its folder.');

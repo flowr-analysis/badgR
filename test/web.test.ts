@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { chromium, type Browser, type Page, type Request } from 'playwright-core';
+import { deflateSync, strToU8 } from 'fflate';
 
 const root = path.join(__dirname, '..');
 const dist = path.join(root, 'web-dist');
@@ -104,6 +105,127 @@ function expectLocal(requests: readonly Request[], allowedHosts: readonly string
 	expect(requests.filter(r => r.method() !== 'GET').map(r => `${r.method()} ${r.url()}`)).toEqual([]);
 	expect(requests.filter(r => r.postData() !== null).map(r => r.url())).toEqual([]);
 }
+
+const b64url = (text: string) => Buffer.from(deflateSync(strToU8(text), { level: 9 })).toString('base64url');
+const defaultPolicy = fs.readFileSync(path.join(root, 'policies', 'default.yaml'), 'utf-8');
+/* a policy that differs from the default only in a time limit, so its tiers are the same */
+const customPolicy = defaultPolicy.replace('lintTimeout: 120', 'lintTimeout: 110');
+
+describe('links, exports, and the policy', () => {
+	test('a link carries a custom policy, the badge marks it, and Reset goes back to the default with an undo', async() => {
+		const page = await browser.newPage();
+		const errors: string[] = [];
+		page.on('pageerror', e => errors.push(e.message));
+		await page.goto(`${origin}/#z=${b64url('system(readline())\n')}&p=${b64url(customPolicy)}`);
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: none, custom policy');
+		await page.locator('#notice:not([hidden])', { hasText: 'its own policy' }).waitFor();
+		/* the link the page writes names the policy again, in the same order */
+		expect(page.url()).toMatch(/#z=[^&]+&p=[^&]+&tier=none&n=1$/);
+		await page.click('[data-tab="policy"]');
+		expect(await page.locator('#policy-status').innerText()).toContain('custom policy');
+		await page.click('#policy-reset');
+		await page.locator('#policy-status', { hasText: 'default policy' }).waitFor();
+		expect(await page.locator('#policy-reset').isDisabled()).toBe(true);
+		await page.locator('#policy-note button', { hasText: 'Undo' }).click();
+		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('a link without a policy uses the default, so it shows the tier it was shared with', async() => {
+		const page = await browser.newPage();
+		await page.goto(`${origin}/#p=${b64url(customPolicy)}`);
+		await page.click('[data-tab="policy"]');
+		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		/* the bare page keeps the policy of this browser */
+		await page.goto(`${origin}/`);
+		await page.reload();
+		await page.click('[data-tab="policy"]');
+		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		await page.goto(`${origin}/#z=${b64url('x <- 1\n')}&tier=gold&n=0`);
+		await page.reload();
+		expect(await tierOf(page)).toBe('gold');
+		await page.click('[data-tab="policy"]');
+		await page.locator('#policy-status', { hasText: 'default policy' }).waitFor();
+		await page.close();
+	}, 180_000);
+
+	test('export=sarif downloads SARIF once the analysis is done, with links back to each result', async() => {
+		const page = await browser.newPage();
+		const download = page.waitForEvent('download', { timeout: 120_000 });
+		await page.goto(`${origin}/#z=${b64url('x <- readline()\nsystem(x)\n')}&export=sarif`);
+		const file = await download;
+		expect(file.suggestedFilename()).toBe('report.sarif');
+		const sarif = JSON.parse(fs.readFileSync(await file.path(), 'utf-8')) as { version: string, runs: { results: { ruleId: string, hostedViewerUri?: string }[], properties: { tier: string } }[] };
+		expect(sarif.version).toBe('2.1.0');
+		expect(sarif.runs[0].properties.tier).toBe('none');
+		const shell = sarif.runs[0].results.find(r => r.ruleId === 'badgr/shell');
+		expect(shell?.hostedViewerUri).toMatch(/#z=[^&]+&tier=none&n=1&at=f%3Ascript.R%3A2%3Abase%253A%253Asystem$/);
+		/* the result's link selects the finding */
+		const again = await browser.newPage();
+		await again.goto(shell?.hostedViewerUri ?? '');
+		expect(await tierOf(again)).toBe('none');
+		await again.locator('#findings tr.sel').waitFor({ timeout: 10_000 });
+		await again.close();
+		await page.close();
+	}, 180_000);
+
+	test('the badge marks a review that decided every finding and left none to fix', async() => {
+		const page = await browser.newPage();
+		await page.goto(`${origin}/#z=${b64url('system(readline())\n')}`);
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: none');
+		await page.locator('#findings tbody tr .rv-to-fix').first().click();
+		await page.locator('#badge img[alt="badgR: none"]').waitFor();
+		await page.locator('#findings tbody tr .rv-tolerated').first().click();
+		await page.locator('#badge img[alt="badgR: none, all findings reviewed"]').waitFor();
+		/* the review goes into the link, which brings the mark back */
+		expect(page.url()).toContain('&rv=');
+		const again = await browser.newPage();
+		await again.goto(page.url());
+		expect(await tierOf(again)).toBe('none');
+		await again.locator('#badge img[alt="badgR: none, all findings reviewed"]').waitFor();
+		await again.close();
+		await page.close();
+	}, 180_000);
+
+	test('the URL field suggests CRAN packages and says what a bare name means', async() => {
+		const page = await browser.newPage();
+		await page.goto(`${origin}/`);
+		await page.click('[data-tab="url"]');
+		await page.fill('#url-input', 'gl');
+		await page.locator('#url-packages option[value="glue"]').waitFor({ state: 'attached' });
+		await page.fill('#url-input', 'glue@1.8.0');
+		await page.locator('#url-note', { hasText: 'CRAN package glue 1.8.0' }).waitFor();
+		await page.close();
+	}, 60_000);
+
+	test('the policy grid edits more than the tiers, and each changed part resets on its own', async() => {
+		const page = await browser.newPage();
+		await page.goto(`${origin}/`);
+		await page.click('[data-tab="policy"]');
+		await page.locator('.vsettings summary').click();
+		expect(await page.locator('.vsettings .vreset').count()).toBe(0);
+		const name = page.locator('.vsettings .vblock').first().locator('input').first();
+		await name.fill('my policy');
+		await name.press('Tab');
+		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		await page.locator('.vsettings .vreset').first().waitFor();
+		await page.locator('.vsettings .vreset').first().click();
+		await page.locator('#policy-status', { hasText: 'default policy' }).waitFor();
+		/* functions of a capability: a regular expression that does not compile is refused */
+		const fn = page.locator('.vcap-fns input').first();
+		await fn.fill('^(broken$');
+		await fn.press('Enter');
+		await page.locator('#policy-status', { hasText: 'default policy' }).waitFor();
+		await fn.fill('^my_eval$');
+		await fn.press('Enter');
+		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		await page.locator('.vcap-fns .chip', { hasText: '^my_eval$' }).waitFor();
+		await page.close();
+	}, 60_000);
+});
 
 describe('the playground', () => {
 	test.each([

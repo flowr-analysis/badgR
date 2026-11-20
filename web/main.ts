@@ -1,16 +1,18 @@
 /** The badgR playground: input on the left, report on the right. Nothing here sends data anywhere. */
 import type { EditorView } from '@codemirror/view';
-import { badgeSvg } from '../src/badge';
+import { type BadgeMarks, badgeSvg, badgeTitle } from '../src/badge';
+import { findingAt, lintAt, parseAt, sarifLog } from '../src/sarif';
 import type { FlowrQueryRecord, Progress, Report } from '../src/core';
 import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
 import { type FileRoleName, type Policy, FileRoles, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
 import { markdownReport } from '../src/report';
-import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
+import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, reviewSummary, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
 import type { PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
 import { SourceError, describeUrl, fromDrop, fromFiles, fromUrl } from './sources';
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
 import defaultPolicy from '../policies/default.yaml';
+import { parse as parseYaml } from 'yaml';
 import { Examples } from './examples';
 import { highlightLines } from './highlight';
 import { applicableFixes, applyFixes, unifiedDiff } from './patch';
@@ -212,6 +214,30 @@ for(const tab of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
 
 /* ---------------------------------------------------------------- policy */
 
+/** the same policy, whatever its comments and layout */
+function samePolicy(a: string, b: string): boolean {
+	if(a === b) {
+		return true;
+	}
+	try {
+		return JSON.stringify(parseYaml(a)) === JSON.stringify(parseYaml(b));
+	} catch{
+		return false;
+	}
+}
+const defaultShape = JSON.stringify(parseYaml(defaultPolicy));
+/** whether a policy is the default one, in content */
+function isDefault(text: string): boolean {
+	if(text === defaultPolicy) {
+		return true;
+	}
+	try {
+		return JSON.stringify(parseYaml(text)) === defaultShape;
+	} catch{
+		return false;
+	}
+}
+
 const PolicyKey = 'badgr.policy';
 const stored = (() => {
 	try {
@@ -226,12 +252,14 @@ let policy: Policy | undefined;
 function readPolicy(): boolean {
 	try {
 		policy = parsePolicy(policyText, 'policy', '');
-		$('policy-status').textContent = policyText === defaultPolicy ? 'default policy' : 'custom policy';
+		$('policy-status').textContent = isDefault(policyText) ? 'default policy' : 'custom policy: badges mark its tiers with *';
 		$('policy-status').classList.remove('bad');
+		$<HTMLButtonElement>('policy-reset').disabled = isDefault(policyText);
 		return true;
 	} catch(e) {
 		$('policy-status').textContent = e instanceof PolicyError || e instanceof Error ? e.message.replace(/^policy: /, '') : String(e);
 		$('policy-status').classList.add('bad');
+		$<HTMLButtonElement>('policy-reset').disabled = false;
 		return false;
 	}
 }
@@ -240,8 +268,9 @@ let gridTimer: number | undefined;
 function drawPolicyGrid(): void {
 	clearTimeout(gridTimer);
 	gridTimer = window.setTimeout(() => renderVisual($('policy-visual'), policyText, vocabulary, text => {
-		setText(yamlView, text);
-	}), 30);
+		/* a grid edit that leads back to the default brings back its text, comments included */
+		setText(yamlView, isDefault(text) ? defaultPolicy : text);
+	}, { calls: [...new Set(last?.report.findings.map(f => f.call) ?? [])] }), 30);
 }
 
 function policyChanged(text: string): void {
@@ -271,7 +300,48 @@ for(const b of document.querySelectorAll<HTMLButtonElement>('[data-view]')) {
 		$('policy').hidden = b.dataset.view !== 'yaml';
 	});
 }
-$('policy-reset').addEventListener('click', () => setText(yamlView, defaultPolicy));
+/** says the policy changed, with a button that brings back the one before */
+function policyNote(message: string, previous: string): void {
+	const undo = () => {
+		setText(yamlView, previous);
+		clearPolicyNote();
+	};
+	for(const id of ['notice', 'policy-note']) {
+		const box = $(id);
+		const b = el('button', 'button secondary small', isDefault(previous) ? 'Back to the default' : 'Keep my policy');
+		b.type = 'button';
+		b.addEventListener('click', undo);
+		box.replaceChildren(el('span', '', message + ' '), b);
+		box.hidden = false;
+	}
+	if(previous === policyText) {
+		clearPolicyNote();
+	}
+}
+function clearPolicyNote(): void {
+	$('notice').hidden = true;
+	$('policy-note').hidden = true;
+}
+$('policy-reset').addEventListener('click', () => {
+	const mine = policyText;
+	if(mine === defaultPolicy) {
+		return;
+	}
+	setText(yamlView, defaultPolicy);
+	policyNote('The policy is back to the default.', mine);
+	for(const id of ['notice', 'policy-note']) {
+		$(id).querySelector('button')?.replaceChildren('Undo');
+	}
+});
+$('policy-copy').addEventListener('click', () => {
+	const url = isDefault(policyText) ? base : `${base}#p=${b64url(deflateSync(strToU8(policyText), { level: 9 }))}`;
+	void navigator.clipboard?.writeText(url).then(() => {
+		$('policy-copy').textContent = 'copied';
+		setTimeout(() => {
+			$('policy-copy').textContent = 'copy policy link';
+		}, 1500);
+	}, () => showError(`Copy this link by hand: ${url}`));
+});
 readPolicy();
 drawPolicyGrid();
 
@@ -510,7 +580,7 @@ async function analyze(target: string, load: (progress: (msg: string) => void) =
 				} };
 				void sha256(text).then(policyHash => worker.postMessage({
 					type: 'analyze', id, base, target, files, policyText: text,
-					policyName: text === defaultPolicy ? 'default.yaml' : 'custom policy', policyHash
+					policyName: isDefault(text) ? 'default.yaml' : 'custom policy', policyHash, policyModified: !isDefault(text)
 				} satisfies WorkerRequest));
 			});
 			run = { report, files, policyText: text, fromEditor, source };
@@ -548,7 +618,13 @@ const findingIds = (r: Report) => r.findings.map(f => f.id).join('\u0000');
  * the findings table, the code view, and what is open as it is. Only a complete report goes into the link.
  */
 function show(run: Run, mode: 'full' | 'partial' | 'final' = 'full'): void {
+	const calls = (r?: Report) => [...new Set(r?.findings.map(f => f.call) ?? [])].join('\u0000');
+	const newCalls = calls(last?.report) !== calls(run.report);
 	last = run;
+	if(newCalls) {
+		/* the grid suggests the calls of the report for trusted and allowed calls */
+		drawPolicyGrid();
+	}
 	$('empty').hidden = true;
 	$('shared').hidden = true;
 	const same = mode !== 'full' && drawn !== undefined && drawn.files === run.files && drawn.target === run.report.target && drawn.findings === findingIds(run.report);
@@ -557,6 +633,11 @@ function show(run: Run, mode: 'full' | 'partial' | 'final' = 'full'): void {
 	/* only a complete report goes into the link */
 	if(mode !== 'partial' && run.report.pending === undefined) {
 		writeLink();
+		if(exportAfter !== undefined) {
+			const kind = exportAfter;
+			exportAfter = undefined;
+			exportNow(kind, run.report, run.files);
+		}
 	}
 }
 
@@ -581,7 +662,13 @@ function unb64url(text: string): Uint8Array {
 	return Uint8Array.from(bin, c => c.charCodeAt(0));
 }
 
-function linkParams(): URLSearchParams | undefined {
+/**
+ * The parameters of a link to the result, always in the same order and with the same encoding, so the
+ * same code, policy, review, and selection give the same link: the code (`url`, or `z` for the editor's
+ * code), the policy if it is not the default (`p`), the review (`rv`, sorted), the tier and number of
+ * findings it got, and the selection (`at`). `export` makes the page download a file once it is done.
+ */
+function linkParams(over: { at?: string, export?: string } = {}): URLSearchParams | undefined {
 	if(last === undefined || last.source.kind === 'files') {
 		return undefined;
 	}
@@ -591,14 +678,22 @@ function linkParams(): URLSearchParams | undefined {
 	} else {
 		q.set('z', b64url(deflateSync(strToU8(codeView.state.doc.toString()), { level: 9 })));
 	}
-	const decided = last.report.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined);
+	if(!isDefault(last.policyText)) {
+		q.set('p', b64url(deflateSync(strToU8(last.policyText), { level: 9 })));
+	}
+	const decided = last.report.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)
+		.filter((e, i, all) => all.findIndex(x => x.key === e.key) === i).sort((a, b) => a.key.localeCompare(b.key));
 	if(decided.length > 0) {
 		q.set('rv', b64url(deflateSync(strToU8(JSON.stringify(decided)), { level: 9 })));
 	}
 	q.set('tier', last.report.tier.tier);
 	q.set('n', String(last.report.findings.length));
-	if(selected !== undefined) {
-		q.set('at', selected);
+	const at = over.at ?? selected;
+	if(at !== undefined) {
+		q.set('at', at);
+	}
+	if(over.export !== undefined) {
+		q.set('export', over.export);
 	}
 	return q;
 }
@@ -606,6 +701,61 @@ function linkParams(): URLSearchParams | undefined {
 function writeLink(): void {
 	const q = linkParams();
 	history.replaceState(null, '', q ? `#${q.toString()}` : location.pathname);
+}
+
+/** a full link to the result, or the page itself for uploads, which cannot go into a link */
+function linkTo(over: { at?: string, export?: string } = {}): string {
+	const q = linkParams(over);
+	return q ? `${base}#${q.toString()}` : base;
+}
+
+/** what the badge marks: a custom policy, and a review that decided every finding and left none to fix */
+function badgeMarks(r: Report): BadgeMarks {
+	return {
+		custom:   r.policy.modified ?? !isDefault(policyText),
+		reviewed: (r.pending ?? []).length === 0 && reviewSummary(reviewed(r).findings).complete
+	};
+}
+
+/** the report as SARIF, with links to each result when the code can go into a link */
+function sarifText(r: Report, files: readonly SourceFile[]): string {
+	const lines = new Map(files.map(f => [f.path, f.content.split('\n')]));
+	const first = files.find(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path))?.path;
+	const shareable = last !== undefined && last.source.kind !== 'files';
+	return JSON.stringify(sarifLog([reviewed(r)], {
+		fileOf:       f => f ?? first,
+		lineOf:       (f, line) => lines.get(f ?? first ?? '')?.[line - 1],
+		capabilities: policy?.capabilities,
+		linkOf:       shareable ? at => linkTo({ at }) : undefined
+	}), null, 2) + '\n';
+}
+
+/** the files a link can ask for with `export=` */
+const Exports: Record<string, (r: Report, files: readonly SourceFile[]) => [string, string, string]> = {
+	sarif:  (r, files) => ['report.sarif', 'application/sarif+json', sarifText(r, files)],
+	json:   r => ['report.json', 'application/json', JSON.stringify(reviewed(r), null, 2)],
+	md:     r => ['report.md', 'text/markdown', markdownReport(reviewed(r))],
+	badge:  r => ['badge.svg', 'image/svg+xml', badgeSvg(r.tier.tier, r.tier.color, badgeMarks(r))],
+	review: r => ['review.json', 'application/json', JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)]
+};
+/** set by a link with `export=`: the file to download once the analysis is done */
+let exportAfter: string | undefined;
+
+function exportNow(kind: string, r: Report, files: readonly SourceFile[]): void {
+	const make = Exports[kind];
+	if(make === undefined) {
+		showError(`A link can export ${Object.keys(Exports).join(', ')}, not ${kind}.`);
+		return;
+	}
+	const [name, type, content] = make(r, files);
+	const a = el('a');
+	a.download = name;
+	a.href = URL.createObjectURL(new Blob([content], { type }));
+	a.dataset.export = kind;
+	document.body.append(a);
+	a.click();
+	a.remove();
+	setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
 }
 
 /** the same code in flowR's playground, with the lines of the findings marked */
@@ -658,7 +808,7 @@ function retier(): void {
 	const report: Report = {
 		...last.report,
 		tier:   assignTier(policy, last.report.findings, last.report.lint, last.report.analyzed),
-		policy: { ...last.report.policy, name: policyText === defaultPolicy ? 'default.yaml' : 'custom policy' }
+		policy: { ...last.report.policy, name: isDefault(policyText) ? 'default.yaml' : 'custom policy', modified: !isDefault(policyText) }
 	};
 	last = { ...last, report, policyText };
 	render(report, last.files);
@@ -693,7 +843,27 @@ drop.addEventListener('drop', ev => {
 		void analyze(items[0]?.webkitGetAsEntry()?.name ?? 'dropped files', () => fromDrop(items));
 	}
 });
+/* the names of the packages the page has data for, offered while typing a bare name */
+let packageNames: Promise<string[]> | undefined;
+async function suggestPackages(text: string): Promise<void> {
+	const t = text.trim().replace(/^cran:\s*/i, '');
+	const list = $('url-packages');
+	if(!/^[A-Za-z][\w.]*$/.test(t) || t.length < 2) {
+		list.replaceChildren();
+		return;
+	}
+	packageNames ??= fetch(`${base}pkgs/index.json`).then(r => r.json() as Promise<{ packages: Record<string, string> }>)
+		.then(i => Object.keys(i.packages).sort((a, b) => a.localeCompare(b))).catch(() => []);
+	const lower = t.toLowerCase();
+	const names = (await packageNames).filter(n => n.toLowerCase().startsWith(lower)).slice(0, 30);
+	list.replaceChildren(...names.map(n => {
+		const o = el('option');
+		o.value = n;
+		return o;
+	}));
+}
 $<HTMLInputElement>('url-input').addEventListener('input', () => {
+	void suggestPackages($<HTMLInputElement>('url-input').value);
 	const d = describeUrl($<HTMLInputElement>('url-input').value);
 	$('url-note').textContent = d ? sentence(d.note) + '.' : '';
 	$('url-note').classList.toggle('bad', d?.kind === 'shiny-deployment');
@@ -1097,9 +1267,12 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	const pending = r.pending ?? [];
 	$('result').classList.toggle('partial', pending.length > 0);
 	const restore = incremental ? [openState($('ladder')), openState($('downloads')), openState($('lint'))] : [];
-	const svg = badgeSvg(r.tier.tier, r.tier.color);
+	const marks = badgeMarks(r);
+	const svg = badgeSvg(r.tier.tier, r.tier.color, marks);
 	const img = el('img');
-	img.alt = `badgR: ${r.tier.tier}`;
+	img.alt = badgeTitle(r.tier.tier, marks);
+	img.title = [badgeTitle(r.tier.tier, marks), marks.custom ? 'The * says the tier is that of a custom policy, not of badgR\'s default.' : '',
+		marks.reviewed ? 'The check mark says every finding is reviewed and none is left to fix.' : ''].filter(Boolean).join('. ');
 	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 	$('badge').replaceChildren(img);
 	/* while linting rules run, the tier is the best the code can still get */
@@ -1270,8 +1443,10 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		download('badge.svg', 'image/svg+xml', () => svg),
 		download('report.json', 'application/json', () => JSON.stringify(reviewed(r), null, 2)),
 		download('report.md', 'text/markdown', () => markdownReport(reviewed(r))),
+		download('report.sarif', 'application/sarif+json', () => sarifText(r, files)),
 		download('review.json', 'application/json', () => JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)),
 		copyButton('copy Markdown', () => markdownReport(reviewed(r)), 'the report as Markdown, with your review, to paste into an issue'),
+		...(last?.source.kind !== 'files' ? [copyButton('copy SARIF link', () => linkTo({ export: 'sarif' }), 'a link that analyzes this code again and downloads report.sarif; the code is inside the link')] : []),
 		...(fixes.count > 0 ? [download('fixes.patch', 'text/x-diff', () => fixes.patch)] : []),
 		importReviewButton());
 	menu.dataset.key = 'downloads';
@@ -1743,7 +1918,7 @@ function renderCode(r: Report, files: readonly SourceFile[], incremental = false
 		};
 		for(const f of r.findings.filter(x => fileOf(x.file) === path)) {
 			add(f.loc, `m-sink m-${f.class}${f.origins.includes('outside') ? ' m-outside' : ''}`, `${f.call} ${describe(f)}${f.review ? ` (reviewed: ${ReviewLabel[f.review.state]})` : ''}`, at => {
-				selected = `f:${fileOf(f.file)}:${f.loc?.[0] ?? 0}:${f.call}`;
+				selected = findingAt(f, fileOf(f.file));
 				writeLink();
 				highlightRow(f);
 				popover(at, findingBox(f));
@@ -1752,7 +1927,7 @@ function renderCode(r: Report, files: readonly SourceFile[], incremental = false
 		for(const l of r.lint) {
 			for(const x of l.results.filter(y => fileOf(y.file) === path)) {
 				add(x.loc, `m-lint${x.quickFix ? ' m-fix' : ''}`, `${l.title ?? l.rule}: ${x.message.replace(/`/g, '')}${x.quickFix ? ', with a quick fix' : ''}`, at => {
-					selected = `l:${l.rule}:${fileOf(x.file)}:${x.loc?.[0] ?? 0}`;
+					selected = lintAt(l.rule, x, fileOf(x.file));
 					writeLink();
 					popover(at, lintBox(l.rule, x));
 				});
@@ -1872,13 +2047,13 @@ function renderCode(r: Report, files: readonly SourceFile[], incremental = false
 	};
 	selectFinding = (f, quiet = false) => {
 		revealFinding(f);
-		selected = `f:${fileOf(f.file)}:${f.loc?.[0] ?? 0}:${f.call}`;
+		selected = findingAt(f, fileOf(f.file));
 		writeLink();
 		highlightRow(f);
 		openAt(fileOf(f.file), f.loc, findingBox(f), quiet);
 	};
 	selectLint = (rule, x, quiet = false) => {
-		selected = `l:${rule}:${fileOf(x.file)}:${x.loc?.[0] ?? 0}`;
+		selected = lintAt(rule, x, fileOf(x.file));
 		writeLink();
 		openAt(rFiles.length === 1 ? rFiles[0].path : fileOf(x.file), x.loc, lintBox(rule, x), quiet);
 	};
@@ -2311,20 +2486,42 @@ function openLink(): void {
 		if(at === undefined || last === undefined) {
 			return;
 		}
-		const [kind, a, b, c] = at.split(':');
-		if(kind === 'f') {
-			const f = last.report.findings.find(x => (x.file ?? '') === a && String(x.loc?.[0] ?? 0) === b && x.call === c)
-				?? last.report.findings.find(x => String(x.loc?.[0] ?? 0) === b);
+		const sel = parseAt(at);
+		const first = last.files.find(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path))?.path;
+		if(sel?.kind === 'f') {
+			const f = last.report.findings.find(x => (x.file ?? first) === sel.file && String(x.loc?.[0] ?? 0) === sel.line && x.call === sel.call)
+				?? last.report.findings.find(x => (x.file ?? first) === sel.file && x.call === sel.call)
+				?? last.report.findings.find(x => String(x.loc?.[0] ?? 0) === sel.line);
 			if(f) {
 				selectFinding(f, true);
 			}
-		} else if(kind === 'l') {
-			const x = last.report.lint.find(l => l.rule === a)?.results.find(y => String(y.loc?.[0] ?? 0) === c);
+		} else if(sel?.kind === 'l') {
+			const results = last.report.lint.find(l => l.rule === sel.rule)?.results ?? [];
+			const x = results.find(y => (y.file ?? first) === sel.file && String(y.loc?.[0] ?? 0) === sel.line) ?? results.find(y => String(y.loc?.[0] ?? 0) === sel.line);
 			if(x) {
-				selectLint(a, x, true);
+				selectLint(sel.rule, x, true);
 			}
 		}
 	};
+	exportAfter = q.get('export') ?? undefined;
+	/* the link names the policy it was made with (none: the default), so it shows the same tier */
+	const p = q.get('p');
+	let linkPolicy = defaultPolicy;
+	if(p !== null) {
+		try {
+			linkPolicy = strFromU8(inflateSync(unb64url(p)));
+			parsePolicy(linkPolicy, 'policy', '');
+		} catch(e) {
+			showError(`The policy in this link is damaged, so the default policy is used: ${e instanceof Error ? e.message : String(e)}`);
+			linkPolicy = defaultPolicy;
+		}
+	}
+	/* only a link to a result or a policy names a policy; the bare page keeps the one of this browser */
+	if(['url', 'z', 'code', 'p'].some(k => q.has(k)) && !samePolicy(linkPolicy, policyText)) {
+		const mine = policyText;
+		setText(yamlView, linkPolicy);
+		policyNote(isDefault(linkPolicy) ? 'This link was made with the default policy, which now replaces yours.' : 'This link was made with its own policy, which now replaces yours.', mine);
+	}
 	/* the decisions of the link's reviewer join the ones in this browser */
 	const rv = q.get('rv');
 	if(rv !== null) {
@@ -2335,7 +2532,7 @@ function openLink(): void {
 			saveReviews();
 		} catch{ /* a damaged link keeps its code and loses its review */ }
 	}
-		let code = q.get('code') ?? undefined;
+	let code = q.get('code') ?? undefined;
 	const z = q.get('z');
 	if(z !== null) {
 		try {

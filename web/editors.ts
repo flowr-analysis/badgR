@@ -8,7 +8,7 @@ import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { yaml } from '@codemirror/lang-yaml';
 import { classHighlighter } from '@lezer/highlight';
 import { highlighter, rLanguage } from './highlight';
-import { parsePolicy, PolicyError } from '../src/policy-core';
+import { FileRoles, Shipped, parsePolicy, PolicyError } from '../src/policy-core';
 import type { PolicyVocabulary } from './protocol';
 
 /* the page's content security policy admits CodeMirror's style sheet by this nonce only */
@@ -56,7 +56,7 @@ export function rEditor(parent: HTMLElement, doc: string, onChange: (text: strin
 /* ---------------------------------------------------------------- policy completion */
 
 const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'allow', 'shipped', 'report', 'lintTimeout', 'lintReadTimeout', 'timeout', 'tiers', 'fallbackTier'];
-const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps'];
+const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps', 'unlessOrigins', 'dynamic'];
 const TierKeys = ['name', 'color', 'summary', 'review', 'description', 'forbid', 'lint'];
 const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'files', 'reason'];
 const Docs: Record<string, string> = {
@@ -69,7 +69,18 @@ const Docs: Record<string, string> = {
 	functions: 'regular expressions; with :: matched against pkg::fn', exclude: 'regular expressions removing matches again',
 	unlessCallProps: 'a call with one of these properties does not count', unlessArgProps: 'a call with a parameter of these properties does not count',
 	forbid: 'a finding matching one of these rules blocks the tier', lint: 'flowR linting rules that must report nothing',
-	classes: 'sink classes the rule matches', via: 'direct: the app\'s own call; package: inside a package', reason: 'shown when the rule blocks the tier'
+	classes: 'sink classes the rule matches', via: 'direct: the app\'s own call; package: inside a package', reason: 'shown when the rule blocks the tier',
+	name: 'the name of the policy, or of a tier', version: 'the version of the policy, a number', description: 'what the policy, a capability, or a tier is about',
+	color: 'the badge color of the tier, e.g. #d4aa32', summary: 'one line for lists and tooltips', review: 'what a person still has to review at this tier',
+	fallbackTier: 'the tier of code that meets no tier, or that flowR could not analyze',
+	unlessOrigins: 'a call whose values all come from these origin classes does not count',
+	dynamic: 'true: the capability of calls the analysis cannot resolve to a function (one capability at most)'
+};
+
+/* what a file role is, for the completion of `shipped` and `files` */
+const RoleDocs: Record<string, string> = {
+	source: 'package and app sources (R/, app scripts)', test: 'tests (tests/)', vignette: 'vignettes (vignettes/, inst/doc/)',
+	install: 'files installed as they are (inst/)', startup: 'startup files (.Rprofile)', [Shipped]: 'the roles the policy lists in shipped'
 };
 
 interface Line { indent: number, key?: string, item: boolean }
@@ -133,10 +144,16 @@ function valuesFor(key: string, path: readonly string[], v: PolicyVocabulary, cu
 		case 'callProps': case 'unlessCallProps': return list(v.callProps, 'enum');
 		case 'unlessArgProps': return list(v.argProps, 'enum');
 		case 'lint': case 'report': return v.lintRules.map(r => ({ label: r.name, type: 'function', detail: r.title, info: r.about }));
-		case 'origins': case 'fallbackOrigin': return list(originNames, 'variable');
+		case 'origins': case 'fallbackOrigin': case 'unlessOrigins': return list(originNames, 'variable');
+		case 'dynamic': return list(['true', 'false'], 'keyword');
 		case 'classes': case 'class': return list(classes, 'type');
 		case 'capabilities': return list(policy ? Object.keys(policy.capabilities) : [], 'variable');
-		case 'via': return list(['direct', 'package', 'any'], 'keyword');
+		case 'via': return list(['direct', 'package', 'any'], 'keyword', x => ({ direct: 'the app\'s own call', package: 'a call inside a package', any: 'both' } as Record<string, string>)[x]);
+		case 'shipped': return list(FileRoles, 'enum', x => RoleDocs[x]);
+		case 'files': return list([...FileRoles, Shipped], 'enum', x => RoleDocs[x]);
+		case 'fallbackTier': return [];
+		case 'color': return list(['\'#d4aa32\'', '\'#aaacb2\'', '\'#b06e3c\'', '\'#6b6b6b\''], 'constant');
+		case 'trusted': case 'allow': return list(['\'^pkg::fn$\'', '\'^pkg::\'', '\'^shiny::render\\w+$\''], 'text', () => 'a regular expression on pkg::fn');
 		default: return [];
 	}
 }

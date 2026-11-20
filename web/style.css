@@ -674,3 +674,12 @@ html, body { overflow-x: clip; }
 .matrix .role-row.unshipped { opacity: .6; }
 .tag.role { border-style: dashed; }
 .tag.role.unshipped { opacity: .7; }
+
+/* a part of the policy that differs from the default can go back to it */
+.vreset { margin-left: 8px; border: 1px solid var(--line); border-radius: var(--r); background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 400; padding: 0 6px; cursor: pointer; }
+.vreset:hover { color: var(--ink); border-color: var(--faint); }
+.vtier summary .vreset { margin-left: auto; }
+.vcap-fns { margin-left: 12px; }
+.vcap-fns .vlabel { width: 108px; }
+.vrow input[type="color"], .vcolor { flex: none; min-width: 0; width: 28px; padding: 0; }
+.notice { background: var(--code-bg); }

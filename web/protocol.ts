@@ -25,6 +25,8 @@ export type WorkerRequest = { readonly type: 'warm', readonly base: string } | {
 	readonly policyText: string
 	readonly policyName: string
 	readonly policyHash: string
+	/** whether this is another policy than the page's default */
+	readonly policyModified: boolean
 }
 	/* between the analysis worker and its linting worker */
 	| { readonly type: 'lint-init', readonly files: readonly SourceFile[], readonly packages: readonly LintPackage[] }

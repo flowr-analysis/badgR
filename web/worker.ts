@@ -78,7 +78,7 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 		toolVersion:  BADGR_VERSION,
 		flowrVersion: String(flowrVersion()),
 		sigdb:        { tag: undefined as string | undefined, present: true, scope: 'package data of this page (base R and CRAN, latest versions)' },
-		policy:       { name: policy.name, hash: policy.hash, source: policy.source },
+		policy:       { name: policy.name, hash: policy.hash, source: policy.source, modified: req.policyModified },
 		target:       req.target,
 		files:        rFiles.map(f => f.path),
 		generatedAt:  new Date().toISOString()

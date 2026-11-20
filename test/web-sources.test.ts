@@ -2,7 +2,7 @@ import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { describe, expect, test } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import { packagesNamed } from '../web/packages';
-import { describeUrl, fromUrl, fromZip, parseGitHub, stripCommonRoot, uniquePaths } from '../web/sources';
+import { cranPackage, describeUrl, fromUrl, fromZip, normalizeUrl, parseGitHub, stripCommonRoot, uniquePaths } from '../web/sources';
 
 describe('what the page reads', () => {
 	test.each([
@@ -64,6 +64,74 @@ describe('what the page reads', () => {
 			const link = Playground.link({ code: 'system(readline())', name: 'app.R', files: [{ name: 'R/helper.R', code: 'f <- function(x) eval(x)' }] });
 			const files = await fromUrl(link);
 			expect(files).toEqual([{ path: 'R/helper.R', content: 'f <- function(x) eval(x)' }, { path: 'app.R', content: 'system(readline())' }]);
+		});
+
+		test.each([
+			['glue', 'https://cran.r-project.org/package=glue'],
+			['data.table', 'https://cran.r-project.org/package=data.table'],
+			['glue@1.8.0', 'https://cran.r-project.org/package=glue&version=1.8.0'],
+			['cran:glue', 'https://cran.r-project.org/package=glue'],
+			['CRAN: glue', 'https://cran.r-project.org/package=glue'],
+			['bioc:limma', 'https://bioconductor.org/packages/limma'],
+			['example.org', 'https://example.org'],
+			['owner/repo', 'https://github.com/owner/repo'],
+			['  https://x.org/a.R ', 'https://x.org/a.R']
+		])('reads %s as %s', (input, url) => {
+			expect(normalizeUrl(input)).toBe(url);
+		});
+
+		test.each([
+			['https://cran.r-project.org/package=glue', { name: 'glue' }],
+			['https://CRAN.R-project.org/package=data.table', { name: 'data.table' }],
+			['https://cran.r-project.org/web/packages/shiny/index.html', { name: 'shiny' }],
+			['https://cloud.r-project.org/web/packages/fs/', { name: 'fs' }],
+			['https://cran.rstudio.com/web/packages/fs/index.html', { name: 'fs' }],
+			['https://cran.r-project.org/src/contrib/glue_1.8.0.tar.gz', { name: 'glue', version: '1.8.0' }],
+			['https://cran.r-project.org/src/contrib/Archive/glue/glue_1.6.2.tar.gz', { name: 'glue', version: '1.6.2' }],
+			['https://cran.dev/glue', { name: 'glue' }],
+			['https://github.com/cran/glue', undefined],
+			['https://example.org/package=glue', undefined]
+		])('finds the CRAN package of %s', (url, pkg) => {
+			expect(cranPackage(url)).toEqual(pkg);
+		});
+
+		test('names packages by name, Bioconductor packages, and links of this page to a repository', () => {
+			const kind = (u: string) => describeUrl(u)?.kind;
+			expect(kind('glue')).toBe('cran');
+			expect(kind('glue@1.8.0')).toBe('cran');
+			expect(describeUrl('glue@1.8.0')?.note).toContain('glue 1.8.0');
+			expect(kind('bioc:limma')).toBe('bioc');
+			expect(kind('https://bioconductor.org/packages/release/bioc/html/limma.html')).toBe('bioc');
+			expect(kind(`https://example.org/badgr/#url=${encodeURIComponent('https://github.com/o/r')}&tier=gold`)).toBe('github');
+			expect(kind('example.org')).toBe('file');
+		});
+
+		test('fetches a CRAN package, at a version, from its GitHub mirror, and a badgR link from where it points', async() => {
+			const asked: string[] = [];
+			const real = globalThis.fetch;
+			globalThis.fetch = (async(input: string | URL | Request) => {
+				const url = String(input);
+				asked.push(url);
+				if(url.includes('/git/trees/')) {
+					return new Response(JSON.stringify({ tree: [{ path: 'R/a.R', type: 'blob' }, { path: 'DESCRIPTION', type: 'blob' }, { path: 'README.md', type: 'blob' }], truncated: false }));
+				}
+				if(url.startsWith('https://api.github.com/repos/')) {
+					return new Response(JSON.stringify({ default_branch: 'master' }));
+				}
+				return new Response(url.endsWith('DESCRIPTION') ? 'Package: glue' : 'x <- 1');
+			}) as typeof fetch;
+			try {
+				const files = await fromUrl('glue@1.6.2');
+				expect(files.map(f => f.path)).toEqual(['DESCRIPTION', 'R/a.R']);
+				expect(asked).toContain('https://api.github.com/repos/cran/glue/git/trees/1.6.2?recursive=1');
+				expect(asked.some(u => u.startsWith('https://raw.githubusercontent.com/cran/glue/1.6.2/'))).toBe(true);
+				asked.length = 0;
+				await fromUrl(`https://example.org/badgr/#url=${encodeURIComponent('cran:glue')}&tier=gold`);
+				expect(asked[0]).toBe('https://api.github.com/repos/cran/glue');
+				expect(asked).toContain('https://api.github.com/repos/cran/glue/git/trees/master?recursive=1');
+			} finally {
+				globalThis.fetch = real;
+			}
 		});
 
 		test('explains that a running Shiny app does not hand out its code', async() => {
