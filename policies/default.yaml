@@ -32,6 +32,12 @@ capabilities:
       - '^reticulate::(py_run_string|py_run_file|py_eval|source_python|repl_python)$'
       - '^Rcpp::(sourceCpp|cppFunction|evalCpp)$'
       - '^rstudioapi::(sendToConsole|executeCommand|jobRunScript)$'
+      # code that runs later, elsewhere, or in place of other code
+      - '^(delayedAssign|trace|assignInNamespace|assignInMyNamespace)$'
+      - '^(future::)?(future|futureCall|futureAssign)$'
+      - '^promises::future_promise$'
+      - '^rlang::(eval_tidy|eval_bare|parse_expr|parse_exprs|exec|inject)$'
+      - '^purrr::(exec|invoke|invoke_map)$'
     tags: [eval]
     unlessCallProps: [pure]
     unlessArgProps: [callee]
@@ -78,7 +84,9 @@ capabilities:
   package-load:
     class: severe
     description: attaches or loads a package by a computed name, which runs that package's code
-    functions: ['^(library|require|loadNamespace|requireNamespace|attachNamespace|loadPackageNamespace)$']
+    functions:
+      - '^(library|require|loadNamespace|requireNamespace|attachNamespace|loadPackageNamespace)$'
+      - '^(pacman::p_load|box::use)$'
     unlessOrigins: [author]
   # a call of a value the analysis cannot resolve to a function: `l$f(x)`, `get(x)(y)`
   dynamic-call:
@@ -101,6 +109,10 @@ capabilities:
 
 # package functions whose internal sinks do not count (Shiny evaluates the author's code)
 trusted:
+  # an R6 class generator: its $new() and methods are the author's code
+  - '^R6::R6Class$'
+  # renderers that evaluate the author's expression, as shiny's render functions do
+  - '^plotly::(renderPlotly|plotlyOutput|event_data)$'
   # rlang's argument checks and conditions evaluate only the package's own calls
   - '^rlang::(abort|warn|inform|signal|arg_match0?|check_\w+|caller_(env|arg|call)|current_(env|call)|list2|dots_list|enquos?|enexprs?|ensyms?|format_error_bullets|is_\w+|local_options|on_load|run_on_load)$'
   # data.table evaluates only the expressions of the caller (`[` i/j/by) and builds tables from values
@@ -114,8 +126,11 @@ trusted:
 # calls that never become findings, whatever they can do: regular expressions on
 # pkg::fn (or fn when flowR cannot qualify it). Use sparingly: an allowed call is not
 # looked at at all, unlike `trusted`, which only skips the sinks inside a package.
-# Shiny's session object: its methods are Shiny's own (onSessionEnded, sendCustomMessage, ...)
-allow: ['^session\$']
+# Shiny's session object: the methods Shiny gives it (a variable named session that holds
+# other functions under other names stays a finding); data.table's `.()`, its alias of list()
+allow:
+  - '^session\$(onSessionEnded|onEnded|onFlush|onFlushed|sendCustomMessage|sendInputMessage|sendBinaryMessage|setBookmarkExclude|getBookmarkExclude|onBookmark|onBookmarked|onRestore|onRestored|doBookmark|reload|close|ns|getCurrentOutputInfo|registerDataObj|resetBrush|allowReconnect)$'
+  - '^\.$'
 
 # which files ship and run where the artifact is used, from flowR's file roles:
 # source (R/, app scripts), test (tests/), vignette (vignettes/), install (inst/),

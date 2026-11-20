@@ -43,6 +43,14 @@ describe('counterexamples', () => {
 		['sapply(readline(), system)', 'none', 'shell'],
 		['x <- readline(); library(x, character.only = TRUE)', 'none', 'package-load'],
 		['require(readline(), character.only = TRUE)', 'none', 'package-load'],
+		/* the code these run is quoted; until it is traced, they at least lose gold */
+		['future::future(system(readline()))', 'silver', 'code-execution'],
+		['delayedAssign("y", system(readline())); y', 'silver', 'code-execution'],
+		['trace(print, quote(system(readline())))', 'silver', 'code-execution'],
+		['rlang::eval_tidy(rlang::parse_expr(readline()))', 'none', 'code-execution'],
+		/* a variable named session is no Shiny session */
+		['session <- list(); session$f <- get(readline()); session$f(1)', 'none', 'dynamic-call'],
+		['f <- function(session) session$f(readline()); f(list(f = system))', 'none', 'dynamic-call'],
 		/* loading a package by a computed name runs its code */
 		['loadNamespace(readline())', 'silver', 'package-load'],
 		['requireNamespace(readline())', 'silver', 'package-load'],
@@ -74,6 +82,7 @@ describe('counterexamples', () => {
 		'library("shiny", character.only = TRUE)',
 		'library(shiny)\nserver <- function(input, output, session) session$onSessionEnded(function() 1)\nshinyApp(fluidPage(), server)',
 		'x <- data.table::data.table(a = 1)',
+		'library(data.table)\ndt <- data.table(a = 1:3, g = 1)\ndt[a > 1, .(m = mean(a)), by = g]',
 		'out <- DT::renderDT(mtcars)',
 		'testthat::expect_equal(1, 1)'
 	])('harmless code stays gold: %s', async code => {
