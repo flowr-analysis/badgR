@@ -55,11 +55,13 @@ npm run badgr -- app/ --min-tier silver         # exit code 2 below silver
 npm run badgr -- app/ --review review.json      # reviewer decisions from the playground
 ```
 
-With Docker, which needs no network once built:
+With Docker: the image [`eagleoutice/badgr`](https://hub.docker.com/r/eagleoutice/badgr) carries flowR and its
+signature database and needs no network.
 
 ```sh
-docker build -t badgr .
-./badgr app/ --badge badge.svg                  # output in ./badgr-out
+docker run --rm -v "$PWD/app:/work/src:ro" eagleoutice/badgr --min-tier silver /work/src
+./badgr app/ --badge badge.svg                  # the same through the wrapper; output in ./badgr-out
+docker build -t badgr . && BADGR_IMAGE=badgr ./badgr app/      # an image built from this repository
 ```
 
 SARIF results keep their identity across runs: rule ids are `badgr/<capability>` and
@@ -83,6 +85,7 @@ npm run web:data -- --only shiny,glue           # package data for a few package
 ```
 
 CI runs the tests and the Docker image on every push. On `main` it also builds the playground with the
-package data of all of CRAN and deploys it to GitHub Pages.
+package data of all of CRAN and deploys it to GitHub Pages, and pushes the image to Docker Hub as
+`eagleoutice/badgr:latest` and `eagleoutice/badgr:<version>` (secrets `DH_NAME` and `DH_PASSWD`).
 
 GPL-3.0-or-later, like flowR.

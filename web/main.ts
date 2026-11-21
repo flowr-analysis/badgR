@@ -79,6 +79,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 worker.postMessage({ type: 'warm', base } satisfies WorkerRequest);
 
 const BadgrReleases = 'https://github.com/flowr-analysis/badgR/releases';
+const DockerHub = 'https://hub.docker.com/r/eagleoutice/badgr';
 
 function showVersions(): void {
 	const f = $<HTMLAnchorElement>('v-flowr');
@@ -87,7 +88,7 @@ function showVersions(): void {
 	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
 	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
 	const foot = $('footer');
-	foot.replaceChildren(link(BadgrReleases, `badgR ${BADGR_VERSION}`), ' (', link('https://github.com/flowr-analysis/badgR', 'source'), ') · ', link(f.href, `flowR ${FLOWR_VERSION}`),
+	foot.replaceChildren(link(BadgrReleases, `badgR ${BADGR_VERSION}`), ' (', link('https://github.com/flowr-analysis/badgR', 'source'), ') · ', link(f.href, `flowR ${FLOWR_VERSION}`), ' · ', link(DockerHub, 'Docker image'),
 		` · signature database ${sigdbTag ?? '?'}, latest version of each CRAN package (the command line has every version) · GPL-3.0`);
 }
 showVersions();
@@ -2495,11 +2496,16 @@ function drawTierTable(): void {
 	}));
 	const top = p.tiers[1]?.name ?? p.tiers[0]?.name ?? 'silver';
 	$('snippet').textContent = [
-		'# the badge and reports for a project',
-		'./badgr app/ --badge badge.svg --md report.md   # Docker, or: npm run badgr -- app/ ...',
+		'# the Docker image has flowR and its signature database inside and needs no network',
+		'docker pull eagleoutice/badgr',
+		'docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" eagleoutice/badgr \\',
+		'  --badge /work/badge.svg --md /work/report.md /work/app',
 		'',
-		`# in CI: fail below ${top}`,
-		`./badgr app/ --min-tier ${top}                    # exit code 2 below ${top}`,
+		`# in CI: fail below ${top} (exit code 2)`,
+		`docker run --rm -v "$PWD:/work/src:ro" eagleoutice/badgr --min-tier ${top} /work/src`,
+		'',
+		'# or with Node.js, from a clone of the repository',
+		'npm run badgr -- app/ --badge badge.svg',
 		'',
 		'# in the README',
 		'![badgR](badge.svg)'

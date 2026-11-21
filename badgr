@@ -2,7 +2,7 @@
 # Run badgR from its Docker image on an R script or folder: ./badgr app/ [options]
 # Reports and badges written with --json/--md/--badge land in ./badgr-out next to where you call this.
 set -eu
-IMAGE="${BADGR_IMAGE:-badgr:latest}"
+IMAGE="${BADGR_IMAGE:-eagleoutice/badgr:latest}"
 if [ $# -lt 1 ]; then
   exec docker run --rm "$IMAGE" --help
 fi
