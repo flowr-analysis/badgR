@@ -7,6 +7,7 @@
   "main": "dist/analyze.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "badgr": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.web.json",
