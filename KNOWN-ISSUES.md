@@ -1,4 +1,4 @@
-# Known issues (after the 0.2.0 counterexample rounds)
+# Known issues (after the 0.1.1 counterexample rounds)
 
 Open cases from the adversarial rounds, ordered by how wrong the tier is. The full snippets and outputs are in the
 session's hunt reports (`hunt/REPORT.md`, `hunt2/REPORT.md`, `break2/REPORT.md`, `r1-opus/REPORT.md`); the flowR changes

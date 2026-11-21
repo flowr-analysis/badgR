@@ -1,6 +1,6 @@
 {
   "name": "badgr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Security tiers (gold, silver, bronze) for R scripts, Shiny apps, and projects, using flowR",
   "repository": "github:flowr-analysis/badgR",
   "homepage": "https://flowr-analysis.github.io/badgR/",
