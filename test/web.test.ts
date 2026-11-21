@@ -172,6 +172,37 @@ describe('links, exports, and the policy', () => {
 		await page.close();
 	}, 180_000);
 
+	test('copy link is a menu with a SARIF link, which opens as the SARIF only, analyzed again', async() => {
+		const page = await browser.newPage();
+		await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+		await page.goto(`${origin}/#z=${b64url('x <- readline()\nsystem(x)\n')}`);
+		expect(await tierOf(page)).toBe('none');
+		/* the menus hold what they say: links to copy, and files to download; the review sits by the findings */
+		await page.locator('#share-menu > summary').click();
+		const items = await page.locator('#share-menu .menu-list > *').allTextContents();
+		expect(items).toEqual(['link to this result', 'SARIF link', 'SARIF download link', 'Markdown report']);
+		const downloads = await page.locator('#downloads details.menu:not(#share-menu) .menu-list > *').allTextContents();
+		expect(downloads).not.toContain('import review');
+		expect(downloads.filter(d => d !== 'fixes.patch')).toEqual(['badge.svg', 'report.json', 'report.md', 'report.sarif']);
+		expect(await page.locator('#review-actions').textContent()).toContain('import review');
+		await page.locator('#share-menu button', { hasText: 'SARIF link' }).first().click();
+		const link = await page.evaluate(() => navigator.clipboard.readText());
+		expect(link).toMatch(/&view=sarif$/);
+		const raw = await browser.newPage();
+		await raw.goto(link);
+		await raw.locator('#raw[data-state="done"]').waitFor({ timeout: 120_000 });
+		/* nothing but the SARIF is visible */
+		expect(await raw.locator('main, header, footer').evaluateAll(es => es.filter(e => (e as HTMLElement).offsetParent !== null).length)).toBe(0);
+		const sarif = JSON.parse(await raw.locator('#raw').textContent() ?? '') as { version: string, runs: { properties: { tier: string } }[] };
+		expect(sarif.version).toBe('2.1.0');
+		expect(sarif.runs[0].properties.tier).toBe('none');
+		expect(await raw.title()).toBe('report.sarif');
+		/* the address stays, so a reload shows the SARIF again */
+		expect(raw.url()).toBe(link);
+		await raw.close();
+		await page.close();
+	}, 180_000);
+
 	test('the badge marks a review that decided every finding and left none to fix', async() => {
 		const page = await browser.newPage();
 		await page.goto(`${origin}/#z=${b64url('system(readline())\n')}`);

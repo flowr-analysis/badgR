@@ -683,3 +683,8 @@ html, body { overflow-x: clip; }
 .vcap-fns .vlabel { width: 108px; }
 .vrow input[type="color"], .vcolor { flex: none; min-width: 0; width: 28px; padding: 0; }
 .notice { background: var(--code-bg); }
+
+/* a link with view=: only the export, as text */
+body.raw-view > :not(#raw) { display: none !important; }
+pre.raw { margin: 0; padding: var(--s3, 16px); white-space: pre-wrap; word-break: break-word; font: 13px/1.45 var(--mono); color: var(--ink); background: var(--bg, transparent); }
+.review-actions { justify-content: flex-end; gap: var(--s1); }

@@ -524,6 +524,12 @@ function showError(msg: string): void {
 	const e = $('error');
 	e.hidden = false;
 	e.textContent = msg;
+	/* a link that shows only an export shows the error in its place */
+	const raw = document.getElementById('raw');
+	if(raw !== null && raw.dataset.state === 'running') {
+		raw.textContent = `badgR could not make this export: ${msg}`;
+		raw.dataset.state = 'error';
+	}
 }
 
 /* ---------------------------------------------------------------- analysis, with a cache per code and policy */
@@ -624,6 +630,9 @@ function show(run: Run, mode: 'full' | 'partial' | 'final' = 'full'): void {
 	/* only a complete report goes into the link */
 	if(mode !== 'partial' && run.report.pending === undefined) {
 		writeLink();
+		if(rawView !== undefined) {
+			showRaw(rawView, run.report, run.files);
+		}
 		if(exportAfter !== undefined) {
 			const kind = exportAfter;
 			exportAfter = undefined;
@@ -659,7 +668,7 @@ function unb64url(text: string): Uint8Array {
  * code), the policy if it is not the default (`p`), the review (`rv`, sorted), the tier and number of
  * findings it got, and the selection (`at`). `export` makes the page download a file once it is done.
  */
-function linkParams(over: { at?: string, export?: string } = {}): URLSearchParams | undefined {
+function linkParams(over: { at?: string, export?: string, view?: string } = {}): URLSearchParams | undefined {
 	if(last === undefined || last.source.kind === 'files') {
 		return undefined;
 	}
@@ -692,16 +701,23 @@ function linkParams(over: { at?: string, export?: string } = {}): URLSearchParam
 	if(over.export !== undefined) {
 		q.set('export', over.export);
 	}
+	if(over.view !== undefined) {
+		q.set('view', over.view);
+	}
 	return q;
 }
 
 function writeLink(): void {
+	/* a link that shows only an export keeps its address, so reloading it shows the export again */
+	if(rawView !== undefined) {
+		return;
+	}
 	const q = linkParams();
 	history.replaceState(null, '', q ? `#${q.toString()}` : location.pathname);
 }
 
 /** a full link to the result, or the page itself for uploads, which cannot go into a link */
-function linkTo(over: { at?: string, export?: string } = {}): string {
+function linkTo(over: { at?: string, export?: string, view?: string } = {}): string {
 	const q = linkParams(over);
 	return q ? `${base}#${q.toString()}` : base;
 }
@@ -737,6 +753,30 @@ const Exports: Record<string, (r: Report, files: readonly SourceFile[]) => [stri
 };
 /** set by a link with `export=`: the file to download once the analysis is done */
 let exportAfter: string | undefined;
+/** set by a link with `view=`: the page shows only this export, as text, once the analysis is done */
+let rawView: string | undefined;
+
+/** the page as one export only: `view=sarif` shows the SARIF of the code, analyzed again, and nothing else */
+function startRaw(kind: string): void {
+	if(!Object.hasOwn(Exports, kind)) {
+		showError(`A link can show ${Object.keys(Exports).join(', ')}, not ${kind}.`);
+		return;
+	}
+	rawView = kind;
+	document.body.classList.add('raw-view');
+	const pre = el('pre', 'raw', `analyzing the code again for ${kind === 'sarif' ? 'SARIF' : kind}…`);
+	pre.id = 'raw';
+	pre.dataset.state = 'running';
+	document.body.append(pre);
+}
+
+function showRaw(kind: string, r: Report, files: readonly SourceFile[]): void {
+	const [name, , content] = Exports[kind](r, files);
+	const pre = $('raw');
+	pre.textContent = content;
+	pre.dataset.state = 'done';
+	document.title = name;
+}
 
 function exportNow(kind: string, r: Report, files: readonly SourceFile[]): void {
 	const make = Object.hasOwn(Exports, kind) ? Exports[kind] : undefined;
@@ -775,13 +815,28 @@ function playgroundLink(r: Report, files: readonly SourceFile[]): HTMLElement {
 	return a;
 }
 
-function shareButton(): HTMLButtonElement {
+/** a menu of what to copy: links to this result, to its SARIF, and the report as Markdown */
+function shareMenu(r: Report): HTMLElement {
 	const shareable = last !== undefined && last.source.kind !== 'files';
-	const b = copyButton('copy link', () => location.href, shareable
-		? 'a link to this result. The code is inside the link and never goes to a server.'
-		: 'uploaded files cannot go into a link. Share report.md instead.');
-	b.disabled = !shareable;
-	return b;
+	const menu = el('details', 'menu');
+	menu.id = 'share-menu';
+	menu.dataset.key = 'share';
+	const summary = el('summary', 'button secondary small', 'copy link');
+	summary.title = shareable
+		? 'links to this result. The code is inside the link and never goes to a server.'
+		: 'uploaded files cannot go into a link. Copy the Markdown or download report.md instead.';
+	const list = el('div', 'menu-list');
+	const links = [
+		copyButton('link to this result', () => linkTo(), 'opens this page with the code, the policy, your review, and the selected result, and analyzes it again'),
+		copyButton('SARIF link', () => linkTo({ view: 'sarif' }), 'opens as the SARIF of this code only: the page analyzes it again and shows nothing but report.sarif'),
+		copyButton('SARIF download link', () => linkTo({ export: 'sarif' }), 'opens this page, analyzes the code again, and downloads report.sarif')
+	];
+	for(const b of links) {
+		b.disabled = !shareable;
+	}
+	list.append(...links, copyButton('Markdown report', () => markdownReport(reviewed(r)), 'the report as Markdown, with your review, to paste into an issue'));
+	menu.append(summary, list);
+	return menu;
 }
 
 /** a policy change that keeps the findings (only tiers changed) is re-tiered here, without flowR */
@@ -1441,14 +1496,15 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		download('report.json', 'application/json', () => JSON.stringify(reviewed(r), null, 2)),
 		download('report.md', 'text/markdown', () => markdownReport(reviewed(r))),
 		download('report.sarif', 'application/sarif+json', () => sarifText(r, files)),
-		download('review.json', 'application/json', () => JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2)),
-		copyButton('copy Markdown', () => markdownReport(reviewed(r)), 'the report as Markdown, with your review, to paste into an issue'),
-		...(last?.source.kind !== 'files' ? [copyButton('copy SARIF link', () => linkTo({ export: 'sarif' }), 'a link that analyzes this code again and downloads report.sarif; the code is inside the link')] : []),
-		...(fixes.count > 0 ? [download('fixes.patch', 'text/x-diff', () => fixes.patch)] : []),
-		importReviewButton());
+		...(fixes.count > 0 ? [download('fixes.patch', 'text/x-diff', () => fixes.patch)] : []));
 	menu.dataset.key = 'downloads';
 	menu.append(ms, list);
-	$('downloads').replaceChildren(shareButton(), playgroundLink(r, files), menu);
+	$('downloads').replaceChildren(shareMenu(r), menu, playgroundLink(r, files));
+	/* the review goes in and out next to the findings it decides */
+	const exportReview = download('review.json', 'application/json', () => JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2));
+	exportReview.textContent = 'export review';
+	exportReview.title = 'your decisions as review.json, to keep or to load elsewhere';
+	$('review-actions').replaceChildren(exportReview, importReviewButton());
 
 	/* the tier ladder: one line per tier, the reasons fold out */
 	$('ladder').replaceChildren(...r.tier.checks.map(c => {
@@ -2501,6 +2557,10 @@ function openLink(): void {
 		}
 	};
 	exportAfter = q.get('export') ?? undefined;
+	const view = q.get('view');
+	if(view !== null) {
+		startRaw(view);
+	}
 	/* the link names the policy it was made with (none: the default), so it shows the same tier */
 	const p = q.get('p');
 	let linkPolicy = defaultPolicy;
