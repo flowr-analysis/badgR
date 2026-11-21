@@ -1,3 +1,5 @@
+import { parse as parseYaml } from 'yaml';
+
 const Hex = 'M32 2 L62 19.5 L62 54.5 L32 72 L2 54.5 L2 19.5 Z';
 
 /**
@@ -32,7 +34,8 @@ export function logoSvg(size = 128, named = true): string {
 }
 
 function escapeXml(s: string): string {
-	return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&apos;' }[c] as string));
+	/* control characters are not allowed in XML at all, not even escaped */
+	return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&apos;' }[c] as string));
 }
 
 /** an estimate of the text width in Verdana 11px, as shields.io badges use */
@@ -99,4 +102,19 @@ export function badgeSvg(tier: string, color: string, marks: BadgeMarks = {}): s
   </g>${mark}
 </svg>
 `;
+}
+
+/**
+ * A policy as its content, whatever its comments, layout, and the order of its keys (lists keep theirs), or
+ * `undefined` if it is no YAML: two policies with the same shape check the same, so neither is custom to the other.
+ */
+export function yamlShape(text: string): string | undefined {
+	const canon = (v: unknown): unknown => Array.isArray(v) ? v.map(canon)
+		: v !== null && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, x]) => [k, canon(x)]))
+			: v;
+	try {
+		return JSON.stringify(canon(parseYaml(text)));
+	} catch{
+		return undefined;
+	}
 }

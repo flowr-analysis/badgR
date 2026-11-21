@@ -42,37 +42,51 @@ export function textReport(r: Report): string {
 	return lines.join('\n');
 }
 
+/** text for a Markdown table cell: no line breaks, pipes, or HTML */
+function cell(text: string): string {
+	return text.replace(/\r?\n|\r/g, ' ').replace(/[\\|*_[\]`<>&]/g, c => c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '&' ? '&amp;' : `\\${c}`);
+}
+
+/** inline code that a backtick in the text cannot end; pipes still escaped for tables */
+function code(text: string): string {
+	const t = text.replace(/\r?\n|\r/g, ' ');
+	const run = Math.max(0, ...(t.match(/`+/g) ?? []).map(m => m.length)) + 1;
+	const fence = '`'.repeat(run);
+	const pad = t.startsWith('`') || t.endsWith('`') ? ' ' : '';
+	return `${fence}${pad}${t.replace(/\|/g, '\\|')}${pad}${fence}`;
+}
+
 /** a Markdown report, for a pull request comment or a CI summary */
 export function markdownReport(r: Report): string {
 	const root = rootOf(r);
 	const out = [
-		`# badgR: ${r.tier.tier}`,
+		`# badgR: ${cell(r.tier.tier)}`,
 		'',
-		`**${path.basename(r.target)}** reaches the tier **${r.tier.tier}** of the policy \`${r.policy.name}\`.`,
-		`Human review still needed: ${r.tier.review}.`,
+		`**${cell(path.basename(r.target))}** reaches the tier **${cell(r.tier.tier)}** of the policy ${code(r.policy.name)}.`,
+		`Human review still needed: ${cell(r.tier.review)}.`,
 		''
 	];
 	if(!r.analyzed) {
-		out.push(`> flowR could not analyze the artifact: ${r.error}`, '');
+		out.push(`> flowR could not analyze the artifact: ${cell(r.error ?? '')}`, '');
 	}
 	out.push('| Tier | Met | Why not |', '|---|---|---|');
 	for(const c of r.tier.checks) {
-		out.push(`| ${c.tier} | ${c.met ? 'yes' : 'no'} | ${c.violations.map(v => v.reason + (v.findings.length ? ` (${v.findings.length})` : '')).join('; ') || ''} |`);
+		out.push(`| ${cell(c.tier)} | ${c.met ? 'yes' : 'no'} | ${c.violations.map(v => cell(v.reason) + (v.findings.length ? ` (${v.findings.length})` : '')).join('; ') || ''} |`);
 	}
 	out.push('');
 	if(r.findings.length > 0) {
 		const reviewed = r.findings.some(f => f.review);
 		out.push('## Findings', '', `| Where | Call | Capability | Class | Via | Origins |${reviewed ? ' Review |' : ''}`, `|---|---|---|---|---|---|${reviewed ? '---|' : ''}`);
 		for(const f of r.findings) {
-			const review = reviewed ? ` ${f.review ? `${f.review.state}${f.review.note ? `: ${f.review.note.replace(/\|/g, '\\|')}` : ''}` : ''} |` : '';
-			out.push(`| ${where(f, root)} | \`${f.call}\` | ${f.capability} | ${f.class} | ${f.via}${f.through ? ` (\`${f.through}\`)` : ''} | ${f.origins.join(', ')} |${review}`);
+			const review = reviewed ? ` ${f.review ? `${f.review.state}${f.review.note ? `: ${cell(f.review.note)}` : ''}` : ''} |` : '';
+			out.push(`| ${cell(where(f, root))} | ${code(f.call)} | ${cell(f.capability)} | ${f.class} | ${f.via}${f.through ? ` (${code(f.through)})` : ''} | ${f.origins.join(', ')} |${review}`);
 		}
 		out.push('');
 	}
 	if(r.lint.length > 0) {
 		out.push('## Linting rules', '', '| Rule | Results |', '|---|---|');
 		for(const l of r.lint) {
-			out.push(`| [${l.rule}](${l.docs ?? 'https://github.com/flowr-analysis/flowr/wiki/Linter'}) | ${l.error ? `failed: ${l.error}` : l.count} |`);
+			out.push(`| [${cell(l.rule)}](${(l.docs ?? 'https://github.com/flowr-analysis/flowr/wiki/Linter').replace(/[()\s]/g, encodeURIComponent)}) | ${l.error ? `failed: ${cell(l.error)}` : l.count} |`);
 		}
 		out.push('');
 	}

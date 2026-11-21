@@ -102,3 +102,31 @@ describe('the command line', () => {
 		expect(report.files.map(f => path.basename(f))).toEqual(expect.arrayContaining(['DESCRIPTION', 'NAMESPACE', '.Rprofile']));
 	}, 300_000);
 });
+
+describe('the command line, arguments', () => {
+	test('two outputs to stdout are refused, not mixed', () => {
+		const r = cli('--json', '--sarif', '-', '--quiet', path.join(root, 'test', 'fixtures', 'bronze'));
+		expect(r.status).toBe(1);
+		expect(r.stderr).toContain('stdout');
+		expect(r.stdout).toBe('');
+	});
+
+	test('an unknown flag or a bad timeout is a line, not a stack', () => {
+		const a = cli('--nope', 'x');
+		expect(a.status).toBe(1);
+		expect(a.stderr).not.toContain('    at ');
+		expect(cli('--timeout', 'abc', path.join(root, 'test', 'fixtures', 'bronze')).stderr).toContain('--timeout');
+	});
+
+	test('the default policy with other layout and key order is not custom, a changed one is', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-marks-'));
+		const text = fs.readFileSync(path.join(root, 'policies', 'default.yaml'), 'utf-8');
+		const reordered = path.join(dir, 'reordered.yaml');
+		/* same content, other layout: a comment, and the document as JSON with its keys reversed */
+		const doc = (require('yaml') as typeof import('yaml')).parse(text) as Record<string, unknown>;
+		fs.writeFileSync(reordered, '# mine\n' + JSON.stringify(Object.fromEntries(Object.entries(doc).reverse())));
+		const badge = path.join(dir, 'b.svg');
+		expect(cli('--quiet', '--policy', reordered, '--badge', badge, path.join(root, 'test', 'fixtures', 'bronze')).status).toBe(0);
+		expect(fs.readFileSync(badge, 'utf-8')).not.toContain('custom policy');
+	}, 300_000);
+});

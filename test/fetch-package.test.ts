@@ -88,3 +88,9 @@ describe('damaged archives', () => {
 		expect(packageSpec('data.table', () => false)).toEqual({ repo: 'cran', name: 'data.table' });
 	});
 });
+
+describe('packages by name, odd specs', () => {
+	test.each(['cran:', 'glue@', '@1.0', '../x', 'bioc:../../etc', 'glue@..', 'glue@.', 'cran:glue@../x', 'glue@1.0/../x'])('%s is no package', target => {
+		expect(packageSpec(target, () => false)).toBeUndefined();
+	});
+});

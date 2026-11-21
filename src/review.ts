@@ -26,13 +26,13 @@ export function findingKey(f: Pick<Finding, 'file' | 'call' | 'capability' | 'vi
 }
 
 export function parseReview(text: string): ReviewEntry[] {
-	const raw = JSON.parse(text) as Partial<ReviewFile> | ReviewEntry[];
-	const entries = Array.isArray(raw) ? raw : raw.entries ?? [];
+	const raw = JSON.parse(text) as Partial<ReviewFile> | ReviewEntry[] | null;
+	const entries = Array.isArray(raw) ? raw : raw !== null && typeof raw === 'object' && Array.isArray(raw.entries) ? raw.entries : [];
 	return entries.filter((e): e is ReviewEntry => typeof e?.key === 'string' && (ReviewStates as readonly string[]).includes(e.state));
 }
 
 export function reviewFile(entries: Iterable<ReviewEntry>): ReviewFile {
-	return { badgrReview: 1, entries: [...entries].sort((a, b) => a.key.localeCompare(b.key)) };
+	return { badgrReview: 1, entries: [...entries].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0) };
 }
 
 /** how many findings each state has, and how many nobody looked at yet */

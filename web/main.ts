@@ -1,6 +1,6 @@
 /** The badgR playground: input on the left, report on the right. Nothing here sends data anywhere. */
 import type { EditorView } from '@codemirror/view';
-import { type BadgeMarks, badgeSvg, badgeTitle } from '../src/badge';
+import { type BadgeMarks, badgeSvg, badgeTitle, yamlShape } from '../src/badge';
 import { findingAt, lintAt, parseAt, sarifLog } from '../src/sarif';
 import type { FlowrQueryRecord, Progress, Report } from '../src/core';
 import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
@@ -12,7 +12,6 @@ import { SourceError, describeUrl, fromDrop, fromFiles, fromUrl, inflateLimited 
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { deflateSync, strFromU8, strToU8 } from 'fflate';
 import defaultPolicy from '../policies/default.yaml';
-import { parse as parseYaml } from 'yaml';
 import { Examples } from './examples';
 import { highlightLines } from './highlight';
 import { applicableFixes, applyFixes, unifiedDiff } from './patch';
@@ -216,26 +215,16 @@ for(const tab of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
 
 /** the same policy, whatever its comments and layout */
 function samePolicy(a: string, b: string): boolean {
-	if(a === b) {
-		return true;
-	}
-	try {
-		return JSON.stringify(parseYaml(a)) === JSON.stringify(parseYaml(b));
-	} catch{
-		return false;
-	}
+	const shape = yamlShape(a);
+	return a === b || (shape !== undefined && shape === yamlShape(b));
 }
-const defaultShape = JSON.stringify(parseYaml(defaultPolicy));
+const defaultShape = yamlShape(defaultPolicy);
 /** whether a policy is the default one, in content */
 function isDefault(text: string): boolean {
 	if(text === defaultPolicy) {
 		return true;
 	}
-	try {
-		return JSON.stringify(parseYaml(text)) === defaultShape;
-	} catch{
-		return false;
-	}
+	return yamlShape(text) === defaultShape;
 }
 
 const PolicyKey = 'badgr.policy';
@@ -681,8 +670,14 @@ function linkParams(over: { at?: string, export?: string } = {}): URLSearchParam
 	if(!isDefault(last.policyText)) {
 		q.set('p', b64url(deflateSync(strToU8(last.policyText), { level: 9 })));
 	}
-	const decided = last.report.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)
-		.filter((e, i, all) => all.findIndex(x => x.key === e.key) === i).sort((a, b) => a.key.localeCompare(b.key));
+	const byKey = new Map<string, ReviewEntry>();
+	for(const e of last.report.findings.map(reviewOf)) {
+		if(e !== undefined && !byKey.has(e.key)) {
+			byKey.set(e.key, e);
+		}
+	}
+	/* by code point, not by locale, so every browser makes the same link */
+	const decided = [...byKey.values()].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 	if(decided.length > 0) {
 		q.set('rv', b64url(deflateSync(strToU8(JSON.stringify(decided)), { level: 9 })));
 	}
@@ -2567,7 +2562,14 @@ function showShared(tier: string | undefined, n: string | null, note: string, ac
 	if(tier === undefined || policy === undefined) {
 		return;
 	}
-	const t = policy.tiers.find(x => x.name === tier) ?? policy.fallbackTier;
+	const t = [...policy.tiers, policy.fallbackTier].find(x => x.name === tier);
+	/* a link can claim only a tier the policy has, and a count that is a number */
+	if(t === undefined) {
+		return;
+	}
+	if(n !== null && !/^\d{1,9}$/.test(n)) {
+		n = null;
+	}
 	const box = $('shared');
 	const img = el('img');
 	img.alt = `badgR: ${tier}`;

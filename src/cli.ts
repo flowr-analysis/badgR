@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { analyze } from './analyze';
 import { DefaultPolicyPath, PolicyError, loadPolicy } from './policy';
 import { ensureSigDb, sigDbStatus } from './sigdb';
-import { badgeSvg, logoSvg } from './badge';
+import { badgeSvg, logoSvg, yamlShape } from './badge';
 import { applyReview, parseReview, reviewSummary, type ReviewEntry } from './review';
 import { sarifLog } from './sarif';
 import type { Report } from './core';
@@ -25,7 +25,7 @@ Options:
   --policy <file.yaml>   the policy (default: the tiers of the threat model)
   --json [file]          write the JSON report (to stdout without a file)
   --md <file | ->        write a Markdown report (- for stdout)
-  --badge <file.svg>     write the badge; a custom policy marks the tier with *, a review
+  --badge <file.svg | -> write the badge (- for stdout); a custom policy marks the tier with *, a review
                          (--review) that decided every finding and left none to fix with a check
   --sarif <file | ->     write SARIF 2.1.0 for code scanning (- for stdout)
   --min-tier <tier>      exit with 2 when the artifact does not reach this tier
@@ -101,8 +101,17 @@ async function main(): Promise<number> {
 		await ensureSigDb(err);
 	}
 	const timeoutMs = values.timeout === undefined ? undefined : Number(values.timeout) * 1000;
+	if(timeoutMs !== undefined && !(timeoutMs > 0)) {
+		err(`--timeout: ${values.timeout} is not a number of seconds above 0`);
+		return 1;
+	}
 	const review = values.review === undefined ? undefined : readReview(values.review);
-	const toStdout = Boolean(values.json && values['json-file'] === undefined) || values.md === '-' || values.sarif === '-';
+	const stdoutOutputs = [values.json && values['json-file'] === undefined ? '--json' : '', values.md === '-' ? '--md -' : '', values.sarif === '-' ? '--sarif -' : '', values.badge === '-' ? '--badge -' : ''].filter(Boolean);
+	if(stdoutOutputs.length > 1) {
+		err(`${stdoutOutputs.join(' and ')} would both write to stdout and mix their output; send one of them to a file`);
+		return 1;
+	}
+	const toStdout = stdoutOutputs.length > 0;
 	let code = 0;
 	const reports = [];
 	const printer = new ProgressPrinter(positionals.length, process.stderr, values.quiet);
@@ -172,9 +181,23 @@ async function main(): Promise<number> {
 		const weakest = reports.reduce((a, b) => order.indexOf(b.tier.tier) > order.indexOf(a.tier.tier) ? b : a);
 		/* reviewed only when a review was given and it covers every finding of every artifact */
 		const reviewed = review !== undefined && reports.some(r => r.findings.length > 0) && reports.every(r => r.findings.length === 0 || reviewSummary(r.findings).complete);
-		writeFile(values.badge, badgeSvg(weakest.tier.tier, weakest.tier.color, { custom: weakest.policy.modified, reviewed }));
+		const svg = badgeSvg(weakest.tier.tier, weakest.tier.color, { custom: isCustomPolicy(weakest.policy.modified, policyFile), reviewed });
+		if(values.badge === '-') {
+			process.stdout.write(svg);
+		} else {
+			writeFile(values.badge, svg);
+		}
 	}
 	return code;
+}
+
+/** a policy is custom unless it says what badgR's default says (comments, layout, and key order do not count) */
+function isCustomPolicy(modified: boolean | undefined, file: string): boolean {
+	if(modified !== true) {
+		return false;
+	}
+	const mine = yamlShape(fs.readFileSync(file, 'utf-8'));
+	return mine === undefined || mine !== yamlShape(fs.readFileSync(DefaultPolicyPath, 'utf-8'));
 }
 
 function rewriteJson(args: string[]): string[] {
@@ -238,6 +261,10 @@ function exitAfterFlush(code: number): void {
 }
 
 main().then(exitAfterFlush, e => {
-	process.stderr.write((e instanceof PolicyError ? `policy error: ${e.message}` : (e as Error)?.stack ?? String(e)) + '\n');
+	/* a mistake in the arguments or a file is told in a line, not with a stack */
+	const told = e instanceof PolicyError ? `policy error: ${e.message}`
+		: typeof (e as { code?: unknown })?.code === 'string' && /^(ERR_PARSE_ARGS_|ENOENT|EACCES|EISDIR)/.test((e as { code: string }).code) ? `badgr: ${(e as Error).message}`
+			: undefined;
+	process.stderr.write((told ?? (e as Error)?.stack ?? String(e)) + '\n');
 	exitAfterFlush(1);
 });

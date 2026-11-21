@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { Playground } from '@eagleoutice/flowr/util/text/playground-link';
 import { chromium, type Browser, type Page, type Request } from 'playwright-core';
 import { deflateSync, strToU8 } from 'fflate';
+import { parse as parseYaml } from 'yaml';
 
 const root = path.join(__dirname, '..');
 const dist = path.join(root, 'web-dist');
@@ -203,6 +204,8 @@ describe('links, exports, and the policy', () => {
 
 	test('the policy grid edits more than the tiers, and each changed part resets on its own', async() => {
 		const page = await browser.newPage();
+		/* the analysis tests run beside it and slow the page down */
+		page.setDefaultTimeout(120_000);
 		await page.goto(`${origin}/`);
 		await page.click('[data-tab="policy"]');
 		await page.locator('.vsettings summary').click();
@@ -224,7 +227,7 @@ describe('links, exports, and the policy', () => {
 		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
 		await page.locator('.vcap-fns .chip', { hasText: '^my_eval$' }).waitFor();
 		await page.close();
-	}, 60_000);
+	}, 180_000);
 });
 
 describe('the playground', () => {
@@ -428,6 +431,21 @@ describe('the playground', () => {
 		expectLocal(requests, ['api.github.com', 'raw.githubusercontent.com']);
 		/* the README is not downloaded: only R files are */
 		expect(requests.some(r => r.url().includes('README'))).toBe(false);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
+	test('a link made with the default policy in another key order is not custom, and a hostile tier or count is not shown', async() => {
+		const page = await browser.newPage();
+		const errors: string[] = [];
+		page.on('pageerror', e => errors.push(e.message));
+		const doc = parseYaml(fs.readFileSync(path.join(root, 'policies', 'default.yaml'), 'utf-8')) as Record<string, unknown>;
+		const reordered = '# the same policy\n' + JSON.stringify(Object.fromEntries(Object.entries(doc).reverse()));
+		await page.goto(`${origin}/#z=${b64url('x <- 1\n')}&p=${b64url(reordered)}&tier=${encodeURIComponent('<img src=x onerror=alert(1)>')}&n=abc`);
+		expect(await tierOf(page)).toBe('gold');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: gold');
+		expect(page.url()).not.toContain('&p=');
+		expect(await page.locator('#shared').innerText()).not.toMatch(/NaN|onerror/);
 		expect(errors).toEqual([]);
 		await page.close();
 	}, 180_000);

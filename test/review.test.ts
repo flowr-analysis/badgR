@@ -24,3 +24,16 @@ describe('the review', () => {
 		expect(parseReview(JSON.stringify([{ key: 'x', state: 'tolerated' }, { key: 'y', state: 'ignored' }]))).toEqual([{ key: 'x', state: 'tolerated' }]);
 	});
 });
+
+describe('the review, hostile input', () => {
+	test('a JSON null, a number, or entries that are no list read as no entries', () => {
+		expect(parseReview('null')).toEqual([]);
+		expect(parseReview('3')).toEqual([]);
+		expect(parseReview('{"entries": {"a": 1}}')).toEqual([]);
+	});
+
+	test('entries are sorted by code point, the same in every locale', () => {
+		const keys = ['b', 'B', 'a', 'Z', 'é', 'e'];
+		expect(reviewFile(keys.map(key => ({ key, state: 'tolerated' as const }))).entries.map(e => e.key)).toEqual(['B', 'Z', 'a', 'b', 'e', 'é']);
+	});
+});

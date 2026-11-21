@@ -84,12 +84,17 @@ export function fileUri(file: string): string {
 	return file.split('/').map(encodeURIComponent).join('/');
 }
 
+/** a region SARIF accepts: whole numbers from 1 on, and an end that does not come before the start */
+function validRegion(loc: readonly number[]): boolean {
+	return loc.length >= 4 && loc.every(n => Number.isInteger(n) && n >= 1) && (loc[2] > loc[0] || (loc[2] === loc[0] && loc[3] >= loc[1]));
+}
+
 function location(file: string | undefined, loc: readonly [number, number, number, number] | undefined): Record<string, unknown>[] {
 	/* a physical location needs a file; a region without one (or before line 1) says nothing */
 	if(file === undefined || file === '') {
 		return [];
 	}
-	const valid = loc !== undefined && loc[0] >= 1 && loc[1] >= 1 && loc[2] >= loc[0];
+	const valid = loc !== undefined && validRegion(loc);
 	return [{ physicalLocation: { artifactLocation: { uri: fileUri(file), uriBaseId: 'SRCROOT' }, ...(valid ? { region: region(loc) } : {}) } }];
 }
 
@@ -100,11 +105,13 @@ function originWords(f: Finding): string {
 /** one SARIF run for one report */
 export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown> {
 	const rules = new Map<string, Record<string, unknown>>();
+	const indices = new Map<string, number>();
 	const ruleIndex = (id: string, make: () => Record<string, unknown>) => {
 		if(!rules.has(id)) {
+			indices.set(id, rules.size);
 			rules.set(id, { id, ...make() });
 		}
-		return [...rules.keys()].indexOf(id);
+		return indices.get(id) as number;
 	};
 	/* which tiers each finding blocks */
 	const blocked = new Map<string, string[]>();
@@ -169,7 +176,7 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 				locations: location(file, x.loc),
 				partialFingerprints: { 'badgrLint/v1': fingerprint(JSON.stringify([l.rule, file ?? '', x.message, normalizeLine(lineText)])) },
 				...(link ? { hostedViewerUri: link } : {}),
-				...(x.quickFix?.length && opts.fileOf(x.file) ? { fixes: x.quickFix.map(q => ({
+				...(x.quickFix?.some(q => q.loc && validRegion(q.loc)) && opts.fileOf(x.file) ? { fixes: x.quickFix.filter(q => q.loc && validRegion(q.loc)).map(q => ({
 					description:     { text: q.description },
 					artifactChanges: [{ artifactLocation: { uri: fileUri(opts.fileOf(q.file ?? x.file) ?? ''), uriBaseId: 'SRCROOT' },
 						replacements: [{ deletedRegion: region(q.loc), ...(q.replacement !== undefined ? { insertedContent: { text: q.replacement } } : {}) }] }]

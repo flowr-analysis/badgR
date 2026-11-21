@@ -24,7 +24,8 @@ export interface PackageSpec {
  */
 export function packageSpec(target: string, exists: (p: string) => boolean = fs.existsSync): PackageSpec | undefined {
 	const m = /^(?:(cran|bioc):)?([A-Za-z][A-Za-z0-9.]*[A-Za-z0-9])(?:@([\w.-]+))?$/i.exec(target.trim());
-	if(m === null) {
+	/* a version of dots only (`.`, `..`) would walk the URL's path */
+	if(m === null || (m[3] !== undefined && /^\.+$/.test(m[3]))) {
 		return undefined;
 	}
 	/* a bare word is a path if it exists or looks like a file name or a host, as the web page reads it */
@@ -105,24 +106,35 @@ export async function fetchPackage(p: PackageSpec, log: (msg: string) => void = 
 	}
 	/* at most 1 GiB unpacked: a small archive must not unpack to more than the memory has */
 	const files = untar(gunzipSync(new Uint8Array(await res.arrayBuffer()), { maxOutputLength: 1 << 30 }));
-	fs.rmSync(dir, { recursive: true, force: true });
-	fs.mkdirSync(dir, { recursive: true });
+	/* unpacked next to the folder and moved in at the end: an archive that fails halfway, or a second
+	   run of badgr, never leaves or reads a half-written package */
+	const work = `${dir}.tmp-${process.pid}-${Date.now()}`;
+	fs.rmSync(work, { recursive: true, force: true });
+	fs.mkdirSync(work, { recursive: true });
 	let kept = 0;
-	for(const f of files) {
-		/* GitHub puts everything below `<repo>-<ref>/` */
-		const rel = f.path.split('/').slice(1).join('/');
-		if(rel === '' || !(RFilePattern.test(rel) || MetaFilePattern.test(rel))) {
-			continue;
+	try {
+		for(const f of files) {
+			/* GitHub puts everything below `<repo>-<ref>/` */
+			const rel = f.path.split('/').slice(1).join('/');
+			if(rel === '' || !(RFilePattern.test(rel) || MetaFilePattern.test(rel))) {
+				continue;
+			}
+			const to = path.resolve(work, rel);
+			if(!to.startsWith(work + path.sep) || rel.split('/').includes('..')) {
+				fs.rmSync(work, { recursive: true, force: true });
+				throw new Error(`${packageLabel(p)}: the archive has a path outside its folder: ${f.path}`);
+			}
+			fs.mkdirSync(path.dirname(to), { recursive: true });
+			fs.writeFileSync(to, f.content);
+			kept++;
 		}
-		const to = path.resolve(dir, rel);
-		if(!to.startsWith(dir + path.sep) || rel.split('/').includes('..')) {
-			throw new Error(`${packageLabel(p)}: the archive has a path outside its folder: ${f.path}`);
-		}
-		fs.mkdirSync(path.dirname(to), { recursive: true });
-		fs.writeFileSync(to, f.content);
-		kept++;
+	} catch(e) {
+		fs.rmSync(work, { recursive: true, force: true });
+		throw e;
 	}
-	fs.writeFileSync(stamp, new Date().toISOString() + '\n');
+	fs.writeFileSync(path.join(work, '.badgr-fetched'), new Date().toISOString() + '\n');
+	fs.rmSync(dir, { recursive: true, force: true });
+	fs.renameSync(work, dir);
 	log(`${packageLabel(p)}: ${kept} file(s) in ${dir}`);
 	return dir;
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { badgeSvg, badgeTitle } from '../src/badge';
 import type { Report } from '../src/core';
 import { findingAt, fingerprint, lintAt, parseAt, sarifLog } from '../src/sarif';
+import { markdownReport } from '../src/report';
 import type { Finding } from '../src/tiers';
 
 const finding: Finding = {
@@ -101,5 +102,44 @@ describe('SARIF edge cases', () => {
 	test('fingerprints of different findings do not collide through the separator', () => {
 		const fp = (f: Finding) => (sarifLog([report([f])], { fileOf: x => x, lineOf: () => 'x' }) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgrFinding/v1'];
 		expect(fp({ ...finding, file: 'a|b', call: 'c' })).not.toBe(fp({ ...finding, file: 'a', call: 'b|c' }));
+	});
+});
+
+describe('SARIF, odd regions', () => {
+	test('a region that ends before it starts, or has no whole numbers, is left out; so is a fix without a region', () => {
+		const odd = report([{ ...finding, loc: [3, 9, 3, 2] }, { ...finding, id: '8', loc: [0, 1, 0, 1] }]);
+		odd.lint = [{ rule: 'r', count: 1, results: [{ file: '/p/app.R', loc: [1, 1, 1, 2], message: 'm', quickFix: [{ description: 'd', replacement: 'x' } as never] }] }];
+		const log = sarifLog([odd], opts(['a'])) as { runs: { results: Record<string, unknown>[] }[] };
+		const [a, b, lint] = log.runs[0].results;
+		for(const r of [a, b]) {
+			expect(JSON.stringify(r.locations)).not.toContain('region');
+		}
+		expect(lint.fixes).toBeUndefined();
+	});
+
+	test('control characters in a badge label cannot make the SVG invalid XML', () => {
+		const svg = badgeSvg('go\u0000ld\u001b', '#fff"', { label: 'a<b>&"\'\u0008' });
+		expect(svg).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
+		expect(svg).toContain('a&lt;b&gt;&amp;&quot;&apos;');
+		expect(svg).not.toContain('fill="#fff""');
+	});
+});
+
+describe('Markdown report escaping', () => {
+	test('pipes, backticks, line breaks, and HTML do not break the table', () => {
+		const r = report([{ ...finding, file: '/p/a|b<img src=x>.R', call: 'f`x`|y' }]);
+		r.policy.name = 'p`<b>';
+		r.analyzed = false;
+		r.error = 'line one\n| injected | row |';
+		const md = markdownReport(r);
+		const row = md.split('\n').find(l => l.includes('shell'));
+		expect(row).toBeDefined();
+		/* the row keeps its 6 columns: only escaped pipes inside cells */
+		expect(row!.replace(/\\\|/g, '').split('|').length - 2).toBe(6);
+		expect(md).not.toContain('<img');
+		/* inside a code span, <b> is literal text */
+		expect(md).toContain('``p`<b>``');
+		expect(md).toContain('``f`x`\\|y``');
+		expect(md).not.toMatch(/\n\| injected/);
 	});
 });
