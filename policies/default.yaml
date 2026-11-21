@@ -121,6 +121,10 @@ trusted:
   - '^rlang::(abort|warn|inform|signal|arg_match0?|check_\w+|caller_(env|arg|call)|current_(env|call)|list2|dots_list|enquos?|enexprs?|ensyms?|format_error_bullets|is_\w+|local_options|on_load|run_on_load)$'
   # data.table evaluates only the expressions of the caller (`[` i/j/by) and builds tables from values
   - '^data\.table::(data\.table|as\.data\.table|setDT|setkeyv?|setorderv?|setnames|copy|rbindlist|\w+\.data\.table|:=|\[\.data\.table)$'
+  # ggplot2 builds plots from the caller's own expressions (aes() are evaluated in the data); ggsave writes a file and stays looked at
+  - '^ggplot2::(?!ggsave$)\w+$'
+  # dplyr's column selection helpers evaluate the caller's own expressions and names (glue builds names)
+  - '^dplyr::(across|if_any|if_all|c_across|pick|cur_\w+)$'
   # DT render functions are like shiny's render*: they evaluate the caller's own expression
   - '^DT::(renderDT|renderDataTable|datatable|dataTableOutput|DTOutput|dataTableProxy|replaceData|formatStyle|formatCurrency|formatRound|formatPercentage|formatDate)$'
   # testthat expectations evaluate the quoted code the author passes in (quasi_label), not strings

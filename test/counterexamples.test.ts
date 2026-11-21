@@ -96,6 +96,13 @@ describe('counterexamples', () => {
 		['A <- setRefClass("A", fields = list(n = "numeric")); A$methods(f = system); A$new()$f(readline())', 'none', 'dynamic-call'],
 		['knitr::knit(readline())', 'none', 'code-download'],
 		['rmarkdown::render(readline())', 'none', 'code-download'],
+		/* reactives chained, piped, listed, and passed between modules */
+		['library(shiny)\nserver <- function(input, output, session) { a <- reactive(input$c); b <- reactive(a()); r3 <- reactive(b()); observe(system(r3())) }', 'none', 'shell'],
+		['library(shiny)\nserver <- function(input, output, session) { r <- reactive(input$c) |> bindEvent(input$go); observe(system(r())) }', 'none', 'shell'],
+		['library(shiny)\nmodServer <- function(id, cmd) moduleServer(id, function(input, output, session) observe(system(cmd()))); server <- function(input, output, session) { r <- reactive(input$c); modServer(\'a\', r) }', 'none', 'shell'],
+		['library(shiny)\nmodServer <- function(id) moduleServer(id, function(input, output, session) reactive(input$c)); server <- function(input, output, session) { y <- modServer(\'a\'); observe(system(y())) }', 'none', 'shell'],
+		['library(shiny)\nmodA <- function(id) moduleServer(id, function(input, output, session) reactive(input$c)); modB <- function(id, cc) moduleServer(id, function(input, output, session) observe(system(cc()))); server <- function(input, output, session) { y <- modA(\'a\'); modB(\'b\', y) }', 'none', 'shell'],
+		['library(shiny)\nserver <- function(input, output, session) { r <- reactive(input$c); l <- list(r = r); observe(system(l$r())) }', 'none', 'shell'],
 		/* cat() and the like with a file */
 		['cat(readline(), file = "out.txt")', 'silver', 'network-file'],
 		['capture.output(print(1), file = readline())', 'silver', 'network-file'],
@@ -154,7 +161,14 @@ describe('counterexamples', () => {
 		'setClass("P", representation(x = "numeric")); p <- new("P", x = 1); p@x',
 		'compose <- function(f, g) function(x) g(f(x)); h <- compose(sqrt, abs); h(4)',
 		'A <- setRefClass("A", fields = list(n = "numeric"), methods = list(inc = function() n <<- n + 1)); a <- A$new(n = 1); a$inc()',
-		'library(shiny)\nserver <- function(input, output, session) { d <- debounce(reactive(input$x), 500); observe(print(d())) }\nshinyApp(fluidPage(), server)'
+		'library(shiny)\nserver <- function(input, output, session) { d <- debounce(reactive(input$x), 500); observe(print(d())) }\nshinyApp(fluidPage(), server)',
+		'f <- match.fun(\'mean\'); f(1:3); g <- get(\'sum\'); g(1:2)',
+		'x <- optim(1, function(x) x^2); integrate(function(x) x, 0, 1); uniroot(function(x) x - 1, c(0, 2))',
+		'library(shiny)\nserver <- function(input, output, session) { r <- reactive(input$a) |> bindEvent(input$go); output$o <- renderText(r()) }',
+		'library(shiny)\nmodServer <- function(id, x) moduleServer(id, function(input, output, session) { r <- reactive(input$n * x()); output$o <- renderText(r()); r })\nserver <- function(input, output, session) { x <- reactive(2); y <- modServer(\'a\', x); z <- modServer(\'b\', y) }',
+		'library(shiny)\nx <- tags$div(class = \'a\', tags$p(\'b\'))',
+		'library(ggplot2)\nggplot(mtcars, aes(mpg, cyl)) + geom_point() + theme_minimal() + facet_wrap(~cyl) + scale_x_continuous()',
+		'library(dplyr)\nmtcars %>% mutate(across(everything(), ~ .x * 2)) %>% filter(if_any(everything(), ~ .x > 1))'
 	])('harmless code stays gold: %s', async code => {
 		const r = await run(code);
 		expect(r.tier.tier).toBe('gold');
