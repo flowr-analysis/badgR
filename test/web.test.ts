@@ -327,6 +327,16 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
+	test('the badgR version and the footer link to the releases', async() => {
+		const { page, errors } = await open();
+		expect(await page.locator('#v-badgr').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
+		const foot = page.locator('#footer a', { hasText: /^badgR / });
+		expect(await foot.getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
+		expect(await page.locator('#footer a', { hasText: 'source' }).getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR');
+		expect(errors).toEqual([]);
+		await page.close();
+	});
+
 	test('the theme switch steps through auto, light, and dark, and keeps the choice', async() => {
 		const { page, errors } = await open();
 		const theme = () => page.evaluate(() => document.documentElement.dataset.theme ?? 'auto');

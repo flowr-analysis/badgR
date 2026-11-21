@@ -78,6 +78,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 };
 worker.postMessage({ type: 'warm', base } satisfies WorkerRequest);
 
+const BadgrReleases = 'https://github.com/flowr-analysis/badgR/releases';
+
 function showVersions(): void {
 	const f = $<HTMLAnchorElement>('v-flowr');
 	f.querySelector('.v')!.textContent = FLOWR_VERSION;
@@ -85,7 +87,7 @@ function showVersions(): void {
 	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
 	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
 	const foot = $('footer');
-	foot.replaceChildren(`badgR ${BADGR_VERSION} · `, link(f.href, `flowR ${FLOWR_VERSION}`),
+	foot.replaceChildren(link(BadgrReleases, `badgR ${BADGR_VERSION}`), ' (', link('https://github.com/flowr-analysis/badgR', 'source'), ') · ', link(f.href, `flowR ${FLOWR_VERSION}`),
 		` · signature database ${sigdbTag ?? '?'}, latest version of each CRAN package (the command line has every version) · GPL-3.0`);
 }
 showVersions();
