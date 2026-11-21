@@ -46,36 +46,20 @@ jobs:
     concurrency:
       group: docker-publish
       cancel-in-progress: true
-    permissions:
-      contents: read
-      id-token: write   # Docker Hub OIDC
     steps:
       - uses: actions/checkout@v5
       - run: docker build -t badgr .
       - run: docker run --rm --network none -v "$PWD/test/fixtures/bronze:/work/src:ro" badgr --min-tier bronze /work/src
-      # OIDC when the variable DOCKERHUB_OIDC_CONNECTIONID names a Docker OIDC connection (Docker Home >
-      # Identity & auth > OIDC connections, a rule for repo:flowr-analysis/badgR with write access to
-      # eagleoutice/badgr); otherwise the secret DOCKERHUB_TOKEN. The user name is the Docker organization.
-      - id: auth
+      # like flowR's release, with docker login; one secret, an access token of the Docker Hub user eagleoutice
+      - name: push
         env:
-          OIDC: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID }}
-          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -n "$OIDC" ] || [ -n "$TOKEN" ]; then
-            echo "login=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::neither DOCKERHUB_OIDC_CONNECTIONID nor DOCKERHUB_TOKEN is set, so the image is not pushed to Docker Hub"
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::warning::DOCKERHUB_TOKEN is not set, so the image is not pushed to Docker Hub"
+            exit 0
           fi
-      - if: steps.auth.outputs.login == 'true'
-        uses: docker/login-action@v4
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME || 'eagleoutice' }}
-          password: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID == '' && secrets.DOCKERHUB_TOKEN || '' }}
-        env:
-          DOCKERHUB_OIDC_CONNECTIONID: ${{ vars.DOCKERHUB_OIDC_CONNECTIONID }}
-      - if: steps.auth.outputs.login == 'true'
-        name: push
-        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login -u eagleoutice --password-stdin
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             TAG="${GITHUB_REF_NAME#v}"
           else

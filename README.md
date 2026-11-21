@@ -86,9 +86,7 @@ npm run web:data -- --only shiny,glue           # package data for a few package
 
 CI runs the tests and the Docker image on every push. On `main` it also builds the playground with the
 package data of all of CRAN and deploys it to GitHub Pages, and pushes the image to Docker Hub: `main` as `eagleoutice/badgr:latest`, a tag `v1.2.3` as
-`eagleoutice/badgr:1.2.3`. CI logs in to Docker Hub with OIDC when the repository variable
-`DOCKERHUB_OIDC_CONNECTIONID` names a Docker OIDC connection, and otherwise with the repository secret
-`DOCKERHUB_TOKEN`, an access token with write access to `eagleoutice/badgr`. With neither, it skips the push
-with a warning.
+`eagleoutice/badgr:1.2.3`. That needs one repository secret, `DOCKERHUB_TOKEN`, an access
+token of the Docker Hub user `eagleoutice`; without it, CI skips the push with a warning.
 
 GPL-3.0-or-later, like flowR.
