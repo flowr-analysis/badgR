@@ -16,6 +16,8 @@ export interface CapabilitySpec {
 	readonly dynamic?:         boolean
 	/** a call whose values all come from these origin classes is no finding, e.g. `library(shiny)` for a capability of computed package names */
 	readonly unlessOrigins?: readonly string[]
+	/** functions (regexes, as in `functions`) that have the capability only when given an argument of this name, e.g. `file` of `cat()` */
+	readonly withArgument?: Readonly<Record<string, readonly string[]>>
 }
 
 export interface ForbidRule {
@@ -107,6 +109,23 @@ function str(file: string, where: string, v: unknown, fallback?: string): string
 	return fail(file, `${where} must be a string`);
 }
 
+function withArgument(file: string, where: string, v: unknown): Record<string, string[]> | undefined {
+	if(v === undefined) {
+		return undefined;
+	}
+	if(v === null || typeof v !== 'object' || Array.isArray(v)) {
+		fail(file, `${where} must map argument names to lists of regular expressions`);
+	}
+	const out = Object.create(null) as Record<string, string[]>;
+	for(const [arg, res] of Object.entries(v as Record<string, unknown>)) {
+		if(!/^[A-Za-z.][\w.]*$/.test(arg)) {
+			fail(file, `${where}: ${JSON.stringify(arg)} is no argument name`);
+		}
+		out[arg] = strings(file, `${where}.${arg}`, res);
+	}
+	return out;
+}
+
 function bool(file: string, where: string, v: unknown): boolean {
 	return typeof v === 'boolean' ? v : fail(file, `${where} must be true or false`);
 }
@@ -178,21 +197,25 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 			unlessCallProps: strings(file, `${where}.unlessCallProps`, c?.unlessCallProps),
 			unlessArgProps:  strings(file, `${where}.unlessArgProps`, c?.unlessArgProps),
 			dynamic:         c?.dynamic === undefined ? undefined : bool(file, `${where}.dynamic`, c.dynamic),
-			unlessOrigins:   c?.unlessOrigins === undefined ? undefined : strings(file, `${where}.unlessOrigins`, c.unlessOrigins)
+			unlessOrigins:   c?.unlessOrigins === undefined ? undefined : strings(file, `${where}.unlessOrigins`, c.unlessOrigins),
+			withArgument:    withArgument(file, `${where}.withArgument`, c?.withArgument)
 		};
 		for(const o of spec.unlessOrigins ?? []) {
 			if(!Object.hasOwn(origins, o)) {
 				fail(file, `${where}.unlessOrigins: unknown origin class ${o}`);
 			}
 		}
-		if(!spec.dynamic && !spec.tags?.length && !spec.callProps?.length && !spec.functions?.length) {
-			fail(file, `${where} matches nothing: give tags, callProps, functions, or dynamic: true`);
+		if(!spec.dynamic && !spec.tags?.length && !spec.callProps?.length && !spec.functions?.length && Object.keys(spec.withArgument ?? {}).length === 0) {
+			fail(file, `${where} matches nothing: give tags, callProps, functions, withArgument, or dynamic: true`);
 		}
 		if(spec.dynamic && Object.values(capabilities).some(o => o.dynamic)) {
 			fail(file, `${where}: only one capability can be dynamic`);
 		}
 		checkRegexes(file, `${where}.functions`, spec.functions ?? []);
 		checkRegexes(file, `${where}.exclude`, spec.exclude ?? []);
+		for(const [arg, res] of Object.entries(spec.withArgument ?? {})) {
+			checkRegexes(file, `${where}.withArgument.${arg}`, res);
+		}
 		capabilities[name] = spec;
 		classes.add(spec.class);
 	}

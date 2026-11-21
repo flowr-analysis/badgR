@@ -56,7 +56,7 @@ export function rEditor(parent: HTMLElement, doc: string, onChange: (text: strin
 /* ---------------------------------------------------------------- policy completion */
 
 const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'allow', 'shipped', 'report', 'lintTimeout', 'lintReadTimeout', 'timeout', 'tiers', 'fallbackTier'];
-const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps', 'unlessOrigins', 'dynamic'];
+const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps', 'unlessOrigins', 'dynamic', 'withArgument'];
 const TierKeys = ['name', 'color', 'summary', 'review', 'description', 'forbid', 'lint'];
 const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'files', 'reason'];
 const Docs: Record<string, string> = {
@@ -74,6 +74,7 @@ const Docs: Record<string, string> = {
 	color: 'the badge color of the tier, e.g. #d4aa32', summary: 'one line for lists and tooltips', review: 'what a person still has to review at this tier',
 	fallbackTier: 'the tier of code that meets no tier, or that flowR could not analyze',
 	unlessOrigins: 'a call whose values all come from these origin classes does not count',
+	withArgument: 'calls that count only when they get this argument, e.g. file: [cat] for cat(x, file = path); argument name to function regexes',
 	dynamic: 'true: the capability of calls the analysis cannot resolve to a function (one capability at most)'
 };
 

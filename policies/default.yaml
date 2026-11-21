@@ -48,6 +48,8 @@ capabilities:
       - '^(source|sys\.source|download\.file)$'
       # installing a package runs its code
       - '^(install\.packages|install_(github|gitlab|bitbucket|url|git|svn|version|bioc|cran|dev|local)|pkg_install|source_url|source_gist)$'
+      # rendering a document runs the code in it, as source() does
+      - '^(knitr::(knit|knit2html|knit2pdf|knit_child|spin|stitch)|rmarkdown::render|quarto::quarto_render)$'
   native:
     class: severe
     description: calls native code
@@ -100,7 +102,9 @@ capabilities:
       - '^(url|file|socketConnection|gzfile|bzfile|xzfile|fifo|unz)$'
       - '^(readLines|writeLines|scan|sink|write|writeBin|readBin|writeChar|readChar)$'
       - '^(read\.table|read\.csv2?|read\.delim2?|read\.fwf|read\.dcf|write\.csv2?|write\.table|write\.dcf)$'
-    # not `writes`: flowR states it for cat() and graphics devices too
+    # not `writes`: flowR states it for cat() and graphics devices too; cat() and the like write to a file they are given
+    withArgument:
+      file: ['^(cat|capture\.output|dput)$']
     tags: [network]
   output:
     class: other
@@ -122,6 +126,8 @@ trusted:
   # testthat expectations evaluate the quoted code the author passes in (quasi_label), not strings
   - '^testthat::(expect_\w+|test_that|describe|it|context|skip\w*|succeed|fail|local_\w+|with_\w+|test_path)$'
   - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule|NS)$'
+  # reactive values and their timing: they hold and pass on the values they are given (badgR traces those)
+  - '^shiny::(reactiveVal|reactiveValues|debounce|throttle|reactivePoll|reactiveTimer|invalidateLater|freezeReactiveValue)$'
 
 # calls that never become findings, whatever they can do: regular expressions on
 # pkg::fn (or fn when flowR cannot qualify it). Use sparingly: an allowed call is not

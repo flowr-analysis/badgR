@@ -15,6 +15,7 @@ import { DfEdge, EdgeType } from '@eagleoutice/flowr/dataflow/graph/edge';
 import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
 import { type CapabilitySpec, type FileRoleName, type Policy, FileRoles, lintRulesOf } from './policy-core';
 import type { FileRole } from '@eagleoutice/flowr/project/context/flowr-file';
+import { RNode } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/model';
 import { LintingRules } from '@eagleoutice/flowr/linter/linter-rules';
 import { type Finding, type LintResult, type LintSummary, type QuickFix, type TierResult, assignTier } from './tiers';
 
@@ -201,6 +202,20 @@ export function mayHaveCapability(policy: Policy, idx: BuiltInIndex, name: strin
 	return capabilityOf(compile(policy), idx, q?.fn ?? name, q?.ns) !== undefined;
 }
 
+/** a callee written as a string or in backticks behind `::` (`base::"system"`) is the function of that name */
+function unquoted(name: string): string {
+	const m = /^(["'`])(.*)\1$/s.exec(name);
+	return m === null ? name : m[2];
+}
+
+/** data sets of base R's `datasets` package: data, no functions */
+const BaseDataSets: ReadonlySet<string> = new Set([
+	'mtcars', 'iris', 'airquality', 'ToothGrowth', 'PlantGrowth', 'faithful', 'cars', 'CO2', 'ChickWeight', 'chickwts', 'women',
+	'trees', 'USArrests', 'precip', 'quakes', 'esoph', 'warpbreaks', 'sleep', 'swiss', 'attitude', 'stackloss', 'InsectSprays',
+	'Titanic', 'airmiles', 'AirPassengers', 'anscombe', 'beaver1', 'beaver2', 'BOD', 'Formaldehyde', 'infert', 'LifeCycleSavings',
+	'longley', 'morley', 'Orange', 'OrchardSprays', 'pressure', 'rock', 'state.x77', 'USJudgeRatings', 'Puromycin', 'Loblolly', 'npk'
+]);
+
 /** replacement functions after which a function is no longer the definition flowR resolved its calls to */
 const Rewrites: ReadonlySet<string> = new Set(['base::body<-', 'base::formals<-', 'base::environment<-', 'body<-', 'formals<-', 'environment<-']);
 
@@ -372,7 +387,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	const qualified = Dataflow.qualifyAll(df.graph, true);
 
 	/* `trace`: more vertices whose values count, the callee of a call flowR could not resolve */
-	interface Candidate { id: NodeId, call: string, cap: CompiledCapability, via: 'direct' | 'package', through?: string, contract?: Finding['contract'], tags: string[], trace?: readonly NodeId[] }
+	interface Candidate { id: NodeId, call: string, cap: CompiledCapability, via: 'direct' | 'package', through?: string, contract?: Finding['contract'], tags: string[], trace?: readonly NodeId[], late?: readonly NodeId[], lateAlways?: boolean }
 	/*
 	 * the calls that define the value a callee reads, by qualified name: for a variable, the calls it is defined by
 	 * (not the assignment itself), for a call, that call; `undefined` for a definition that is no call (a parameter, a value)
@@ -380,7 +395,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	const nameOfCall = (c: NodeId): string => {
 		const q = qualified.get(c);
 		const cv = df.graph.getVertex(c) as { name?: Parameters<typeof Identifier.getName>[0] } | undefined;
-		const nm = q !== undefined ? String(Identifier.getName(q)) : String(cv?.name === undefined ? '' : Identifier.getName(cv.name));
+		const nm = unquoted(q !== undefined ? String(Identifier.getName(q)) : String(cv?.name === undefined ? '' : Identifier.getName(cv.name)));
 		const cns = q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined;
 		return cns === undefined ? nm : `${cns}::${nm}`;
 	};
@@ -413,10 +428,416 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	};
 	/* what flowR itself states of a function: its semantic tags, the reason a capability fits it */
 	const tagsOf = (name: string, ns: string | undefined) => [...((ns === undefined ? undefined : idx.get(Identifier.make(name, ns))) ?? idx.get(Identifier.make(name)))?.tags ?? []].map(String);
+	/* the name a call vertex has, `pkg::fn` when flowR qualified it */
+	const callName = (c: NodeId): { name: string, ns: string | undefined } => {
+		const q = qualified.get(c);
+		const cv = df.graph.getVertex(c) as { name?: Parameters<typeof Identifier.getName>[0] } | undefined;
+		const name = unquoted(q !== undefined ? String(Identifier.getName(q)) : cv?.name === undefined ? '' : String(Identifier.getName(cv.name)));
+		return { name, ns: q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined };
+	};
+	/*
+	 * a quoted call is no call, unless the code it is part of runs: its quoting call (`future(...)`, `delayedAssign`),
+	 * or a call its value reaches (`eval(quote(...))`, `e <- quote(...); trace(f, e)`), is a dangerous call
+	 */
+	const UsesEdge = EdgeType.Reads | EdgeType.Argument | EdgeType.Returns | EdgeType.DefinedBy;
+	const runsCache = new Map<NodeId, boolean>();
+	const severeCall = (c: NodeId): boolean => {
+		if(df.graph.getVertex(c)?.tag !== VertexType.FunctionCall) {
+			return false;
+		}
+		const { name, ns } = callName(c);
+		const cap = capabilityOf(caps, idx, name, ns);
+		return cap !== undefined && cap.spec.class === 'severe' && !cap.spec.dynamic;
+	};
+	const quotedButRuns = (id: NodeId): boolean => {
+		const quoters = [...df.graph.edgesTo(id)].filter(([s, e]) => DfEdge.includesType(e, EdgeType.NonStandardEvaluation) && !NodeId.isBuiltIn(s)).map(([s]) => s);
+		return quoters.some(qu => {
+			const hit = runsCache.get(qu);
+			if(hit !== undefined) {
+				return hit;
+			}
+			let runs = false;
+			const seen = new Set<NodeId>([qu]);
+			let front: NodeId[] = [qu];
+			for(let depth = 0; depth < 6 && !runs && front.length > 0 && seen.size < 500; depth++) {
+				const next: NodeId[] = [];
+				for(const x of front) {
+					if(severeCall(x)) {
+						runs = true;
+						break;
+					}
+					for(const [u, e] of df.graph.edgesTo(x)) {
+						if(DfEdge.includesType(e, UsesEdge) && !NodeId.isBuiltIn(u) && !seen.has(u)) {
+							seen.add(u);
+							next.push(u);
+						}
+					}
+				}
+				front = next;
+			}
+			runsCache.set(qu, runs);
+			return runs;
+		});
+	};
+	/*
+	 * code evaluated in data: `with(data, expr)`, `within(data, expr)`, `eval(expr, envir)`. A call in `expr` whose name the
+	 * data defines calls what the data holds (`with(list(f = system), f(x))`); when badgR cannot tell the data's names,
+	 * a call flowR resolved to nothing could be any of them
+	 */
+	interface Mask { readonly names: ReadonlyMap<string, NodeId | undefined> | 'any', readonly data: NodeId }
+	const masks = new Map<NodeId, Mask[]>();
+	{
+		type Arg = { name?: { content?: string }, value?: { info: { id: NodeId }, type: string, content?: unknown, lexeme?: string } } | '<>';
+		const DataCalls = new Set(['list', 'c', 'data.frame', 'list2env', 'as.environment', 'tibble', 'data.table', 'as.list']);
+		const dataNames = (value: NonNullable<Exclude<Arg, '<>'>['value']>, hops = 0): Mask['names'] => {
+			const vid = value.info.id;
+			const vv = df.graph.getVertex(vid);
+			if(vv?.tag === VertexType.FunctionCall) {
+				const { name } = callName(vid);
+				const node = df.graph.idMap?.get(vid) as { arguments?: readonly Arg[] } | undefined;
+				if(!DataCalls.has(name) || node?.arguments === undefined) {
+					return 'any';
+				}
+				const out = new Map<string, NodeId | undefined>();
+				for(const a of node.arguments) {
+					if(a === '<>') {
+						continue;
+					}
+					if(a.name?.content === undefined) {
+						/* an unnamed list or environment in the data: its names are not known here */
+						if(a.value !== undefined && a.value.type !== 'RNumber' && a.value.type !== 'RString' && a.value.type !== 'RLogical') {
+							return 'any';
+						}
+						continue;
+					}
+					out.set(unquoted(a.name.content), a.value?.info.id);
+				}
+				return out;
+			}
+			if(vv?.tag === VertexType.Use && hops < 3) {
+				/* a variable: what it is defined by */
+				const names = new Map<string, NodeId | undefined>();
+				let found = false;
+				for(const [d, e] of df.graph.outgoingEdges(vid) ?? []) {
+					if(!DfEdge.includesType(e, EdgeType.Reads) || NodeId.isBuiltIn(d)) {
+						continue;
+					}
+					for(const [t, e2] of df.graph.outgoingEdges(d) ?? []) {
+						if(!DfEdge.includesType(e2, EdgeType.DefinedBy) || NodeId.isBuiltIn(t)) {
+							continue;
+						}
+						const tn = df.graph.idMap?.get(t) as Exclude<Arg, '<>'>['value'] | undefined;
+						if(tn === undefined || (df.graph.getVertex(t)?.tag === VertexType.FunctionCall && DfgVertex.hasOrigin(df.graph.getVertex(t) as never, BuiltInProcName.Assignment))) {
+							continue;
+						}
+						const sub = dataNames(tn, hops + 1);
+						if(sub === 'any') {
+							return 'any';
+						}
+						found = true;
+						for(const [k, v] of sub) {
+							names.set(k, v);
+						}
+					}
+				}
+				/* a data set of base R (`mtcars`) holds no functions and no outside values */
+				const reads = [...df.graph.outgoingEdges(vid) ?? []].filter(([, e]) => DfEdge.includesType(e, EdgeType.Reads));
+				if(!found && (reads.length > 0 ? reads.every(([d]) => NodeId.isBuiltIn(d)) : BaseDataSets.has(String(value.lexeme)))) {
+					return new Map();
+				}
+				return found ? names : 'any';
+			}
+			if(value.type === 'RNumber' || value.type === 'RString' || value.type === 'RLogical') {
+				return new Map();
+			}
+			return 'any';
+		};
+		const Masking: Record<string, { data: string, at: number }> = {
+			'with': { data: 'data', at: 0 }, 'within': { data: 'data', at: 0 }, 'transform': { data: '_data', at: 0 }, 'subset': { data: 'x', at: 0 },
+			'eval': { data: 'envir', at: 1 }, 'evalq': { data: 'envir', at: 1 }, 'local': { data: 'envir', at: 1 }, 'substitute': { data: 'env', at: 1 }
+		};
+		/* of these, only the code argument is masked, not the others */
+		const CodeArg: Record<string, string> = { eval: 'expr', evalq: 'expr', local: 'expr', substitute: 'expr' };
+		for(const [cid, cv] of df.graph.vertices(true)) {
+			if(cv.tag !== VertexType.FunctionCall) {
+				continue;
+			}
+			const { name, ns } = callName(cid);
+			const m = Object.hasOwn(Masking, name) && (ns === undefined || ns === 'base') ? Masking[name] : undefined;
+			const node = df.graph.idMap?.get(cid) as { arguments?: readonly Arg[] } | undefined;
+			if(m === undefined || node?.arguments === undefined) {
+				continue;
+			}
+			const args = node.arguments;
+			const named = args.findIndex(a => a !== '<>' && a.name?.content === m.data);
+			let pos = -1;
+			for(let i = 0, k = 0; i < args.length; i++) {
+				const a = args[i];
+				if(a !== '<>' && a.name?.content !== undefined) {
+					continue;
+				}
+				if(k++ === m.at) {
+					pos = i;
+					break;
+				}
+			}
+			const at = named >= 0 ? named : pos;
+			const data = at < 0 ? undefined : args[at];
+			if(data === undefined || data === '<>' || data.value === undefined) {
+				continue;
+			}
+			const mask: Mask = { names: dataNames(data.value), data: data.value.info.id };
+			for(const [i, a] of args.entries()) {
+				if(i === at || a === '<>' || a.value === undefined || (Object.hasOwn(CodeArg, name) && a.name?.content !== undefined && a.name.content !== CodeArg[name])) {
+					continue;
+				}
+				for(const sub of RNode.collectAllIds(a.value as never)) {
+					masks.set(sub, [...masks.get(sub) ?? [], mask]);
+				}
+			}
+		}
+	}
 	let lookups = 0;
 	const candidates: Candidate[] = [];
 	const transitiveCache = new Map<string, { cap: CompiledCapability, through: string } | null>();
 	const unresolved = new Set<string>();
+	/*
+	 * where a function value goes: `Negate(system)(x)`, `Reduce(function(f, x) f(x), xs, system)`, `purrr::walk(x, ~system(.x))`,
+	 * `C <- R6Class(...); C$new(x)$run()`. The call that is handed the function (past `list(...)` and `c(...)`), and the
+	 * values it may be called with: the arguments of that call, of a call of its result, and of calls on the variable it is
+	 * stored in (`n <- Negate(system); n(x)`, `C$new(x)`)
+	 */
+	type AstNode = { type: string, lexeme?: string, info: { id: NodeId, parent?: NodeId }, calledFunction?: AstNode, functionName?: AstNode, named?: boolean, accessed?: AstNode, operator?: string, lhs?: AstNode, rhs?: AstNode };
+	const ast = (i: NodeId | undefined) => i === undefined ? undefined : df.graph.idMap?.get(i) as AstNode | undefined;
+	const Containers = new Set(['list', 'c', 'alist', 'pairlist']);
+	const handedTo = (node: AstNode): NodeId | undefined => {
+		let cur: AstNode | undefined = node;
+		for(let hops = 0; cur !== undefined && hops < 8; hops++) {
+			const parent = ast(cur.info.parent);
+			if(parent?.type !== 'RArgument') {
+				return undefined;
+			}
+			const call = ast(parent.info.parent);
+			if(call?.type !== 'RFunctionCall') {
+				return undefined;
+			}
+			if(!Containers.has(callName(call.info.id).name)) {
+				return call.info.id;
+			}
+			cur = call;
+		}
+		return undefined;
+	};
+	/* the variable a callee expression starts with: `C` of `C$new(x)$run` */
+	const calleeRoot = (call: AstNode): AstNode | undefined => {
+		let cur = call.named ? undefined : call.calledFunction;
+		for(let hops = 0; cur !== undefined && hops < 16; hops++) {
+			if(cur.type === 'RSymbol') {
+				return cur;
+			}
+			cur = cur.type === 'RAccess' ? cur.accessed : cur.type === 'RFunctionCall' ? (cur.named ? cur.functionName : cur.calledFunction) : undefined;
+		}
+		return undefined;
+	};
+	/* the calls whose callee starts with a variable, by the definition it reads */
+	const callsOnDefinition = new Map<NodeId, NodeId[]>();
+	for(const [cid, cv] of df.graph.vertices(true)) {
+		if(cv.tag !== VertexType.FunctionCall) {
+			continue;
+		}
+		const node = ast(cid);
+		const root = node === undefined ? undefined : node.named ? node.functionName : calleeRoot(node);
+		if(root === undefined) {
+			continue;
+		}
+		const reads = [...df.graph.outgoingEdges(root.info.id) ?? []].filter(([, e]) => DfEdge.includesType(e, EdgeType.Reads)).map(([t]) => t);
+		/* a named call reads the definition itself */
+		for(const [t, e] of node?.named ? df.graph.outgoingEdges(cid) ?? [] : []) {
+			if(DfEdge.includesType(e, EdgeType.Reads) && DfEdge.doesNotIncludeType(e, EdgeType.Argument)) {
+				reads.push(t);
+			}
+		}
+		for(const t of reads) {
+			if(!NodeId.isBuiltIn(t)) {
+				callsOnDefinition.set(t, [...callsOnDefinition.get(t) ?? [], cid]);
+			}
+		}
+	}
+	/* as criteria of `input-sources`: a call stands for the values it is given */
+	const valuesHandedWith = (c: NodeId, depth = 0): NodeId[] => {
+		const out = new Set<NodeId>([c]);
+		const node = ast(c);
+		/* `do.call(Negate(system), list(x))`: the result is handed on in turn */
+		const next = node === undefined || depth >= 3 ? undefined : handedTo(node);
+		if(next !== undefined) {
+			valuesHandedWith(next, depth + 1).forEach(x => out.add(x));
+		}
+		const parent = ast(node?.info.parent);
+		/* `Negate(system)(x)` */
+		if(parent?.type === 'RFunctionCall' && !parent.named && parent.calledFunction?.info.id === c) {
+			out.add(parent.info.id);
+		}
+		/* `n <- Negate(system); n(x)`, `C <- R6Class(...); C$new(x)$run()` */
+		for(const [d, e] of df.graph.edgesTo(c)) {
+			if(DfEdge.includesType(e, EdgeType.DefinedBy) && df.graph.getVertex(d)?.tag === VertexType.VariableDefinition) {
+				for(const u of callsOnDefinition.get(d) ?? []) {
+					out.add(u);
+				}
+			}
+		}
+		return [...out];
+	};
+	/* the call an anonymous function or formula around `id` is handed to (`function(x) system(x)` in `Vectorize(...)`) */
+	const lambdaHandedTo = (id: NodeId): NodeId | undefined => {
+		for(let cur = ast(id), hops = 0; cur !== undefined && hops < 64; cur = ast(cur.info.parent), hops++) {
+			const isFormula = cur.info.id !== id && (cur.type === 'RUnaryOp' || cur.type === 'RBinaryOp') && cur.lexeme === '~';
+			if(cur.type === 'RFunctionDefinition' || isFormula) {
+				return handedTo(cur);
+			}
+		}
+		return undefined;
+	};
+	/*
+	 * the values a definition can end in, through `if`, `{`, `(`, `switch`, `local`, and `return`: `f <- if (c) function(x) 1 else get(x)` ends
+	 * in a function definition and in a call of `get`. The calls among them (but trusted ones) compute the function.
+	 */
+	const Passing = new Set(['if', '{', '(', 'switch', 'local', 'invisible', 'return']);
+	/*
+	 * calls that make a function of the code's own functions: base R's wrappers of a function they are given
+	 * (`Negate(is.null)`, `Vectorize(function(x, y) x + y)`), and functions of the code that return only function
+	 * definitions (`compose <- function(f, g) function(x) g(f(x))`). A wrapper of a computed function is computed.
+	 */
+	const Wrappers = new Set(['Negate', 'Vectorize']);
+	/* the function definitions such a call makes, `undefined` when it may make another function */
+	const madeFunctions = (c: NodeId, depth = 0): NodeId[] | undefined => {
+		if(depth > 4 || df.graph.getVertex(c)?.tag !== VertexType.FunctionCall) {
+			return undefined;
+		}
+		const nm = callName(c);
+		if(Wrappers.has(nm.name) && (nm.ns === undefined || nm.ns === 'base')) {
+			const first = (ast(c) as { arguments?: readonly ({ value?: AstNode } | '<>')[] } | undefined)?.arguments?.[0];
+			const fn = first === undefined || first === '<>' ? undefined : first.value;
+			if(fn?.type === 'RFunctionDefinition') {
+				return [fn.info.id];
+			}
+			if(fn?.type !== 'RSymbol') {
+				return undefined;
+			}
+			/* a function of base R, or a variable defined only by function definitions */
+			const out: NodeId[] = [];
+			for(const [t, e] of df.graph.outgoingEdges(fn.info.id) ?? []) {
+				if(!DfEdge.includesType(e, EdgeType.Reads) || NodeId.isBuiltIn(t)) {
+					continue;
+				}
+				for(const [d, de] of df.graph.outgoingEdges(t) ?? []) {
+					if(!DfEdge.includesType(de, EdgeType.DefinedBy) || NodeId.isBuiltIn(d)) {
+						continue;
+					}
+					const dv = df.graph.getVertex(d);
+					if(dv?.tag === VertexType.FunctionDefinition) {
+						out.push(d);
+					} else if(dv?.tag === VertexType.FunctionCall && !DfgVertex.hasOrigin(dv as never, BuiltInProcName.Assignment)) {
+						const more = madeFunctions(d, depth + 1);
+						if(more === undefined) {
+							return undefined;
+						}
+						out.push(...more);
+					}
+				}
+			}
+			const reads = [...df.graph.outgoingEdges(fn.info.id) ?? []].filter(([, e]) => DfEdge.includesType(e, EdgeType.Reads));
+			return reads.length > 0 && (out.length > 0 || reads.every(([t]) => NodeId.isBuiltIn(t))) ? out : undefined;
+		}
+		const targets = [...df.graph.outgoingEdges(c) ?? []].filter(([, e]) => DfEdge.includesType(e, EdgeType.Calls)).map(([t]) => t);
+		const out: NodeId[] = [];
+		for(const t of targets) {
+			const fv = NodeId.isBuiltIn(t) ? undefined : df.graph.getVertex(t) as { tag: string, exitPoints?: readonly { nodeId: NodeId }[] } | undefined;
+			const exits = fv?.tag === VertexType.FunctionDefinition ? fv.exitPoints ?? [] : [];
+			if(exits.length === 0 || !exits.every(x => df.graph.getVertex(x.nodeId)?.tag === VertexType.FunctionDefinition)) {
+				return undefined;
+			}
+			out.push(...exits.map(x => x.nodeId));
+		}
+		return targets.length > 0 ? out : undefined;
+	};
+	/* the calls of each function definition such a call made: what its own calls are handed */
+	const madeCalledBy = new Map<NodeId, NodeId[]>();
+	const knownFunction = (c: NodeId, by?: NodeId): boolean => {
+		const made = madeFunctions(c);
+		if(made !== undefined && by !== undefined) {
+			for(const f of made) {
+				madeCalledBy.set(f, [...madeCalledBy.get(f) ?? [], by]);
+			}
+		}
+		return made !== undefined;
+	};
+	const computedEnds = (d: NodeId): NodeId[] => {
+		const out: NodeId[] = [];
+		const seen = new Set<NodeId>();
+		const walk = (x: NodeId, depth: number) => {
+			if(seen.has(x) || depth > 8 || df.graph.getVertex(x)?.tag !== VertexType.FunctionCall) {
+				return;
+			}
+			seen.add(x);
+			const nm = callName(x);
+			if(!Passing.has(nm.name)) {
+				const qn = nm.ns === undefined ? nm.name : `${nm.ns}::${nm.name}`;
+				if(!trusted.some(r => r.test(qn)) && !knownFunction(x)) {
+					out.push(x);
+				}
+				return;
+			}
+			for(const [t, e] of df.graph.outgoingEdges(x) ?? []) {
+				if(DfEdge.includesType(e, EdgeType.Returns) && !NodeId.isBuiltIn(t)) {
+					walk(t, depth + 1);
+				}
+			}
+		};
+		walk(d, 0);
+		return out;
+	};
+	/*
+	 * `C <- R6::R6Class(...); C$new()$add(2)`, `o <- C$new(); o$add(2)`: methods of an R6 class whose members are all
+	 * function definitions or constants are functions of the code (a member that holds another value is not)
+	 */
+	const R6Members = new Set(['public', 'private', 'active', 'methods']);
+	const pureR6 = (c: NodeId): boolean => {
+		const cn = callName(c);
+		/* a reference class (`setRefClass`) is alike: its `fields` name types, its `methods` are functions */
+		if(cn.name !== 'R6Class' && !(cn.name === 'setRefClass' && (cn.ns === undefined || cn.ns === 'methods'))) {
+			return false;
+		}
+		const node = df.graph.idMap?.get(c) as { arguments?: readonly ({ name?: { content?: string }, value?: AstNode & { arguments?: readonly unknown[] } } | '<>')[] } | undefined;
+		for(const a of node?.arguments ?? []) {
+			if(a === '<>' || a.value === undefined || a.name?.content === undefined || !R6Members.has(a.name.content)) {
+				continue;
+			}
+			if(a.value.type !== 'RFunctionCall' || callName(a.value.info.id).name !== 'list') {
+				return false;
+			}
+			for(const m of (a.value.arguments ?? []) as readonly ({ value?: AstNode } | '<>')[]) {
+				const t = m === '<>' ? undefined : m.value?.type;
+				if(t !== undefined && t !== 'RFunctionDefinition' && t !== 'RNumber' && t !== 'RString' && t !== 'RLogical' && !(t === 'RSymbol' && m !== '<>' && m.value?.lexeme === 'NULL')) {
+					return false;
+				}
+			}
+		}
+		return true;
+	};
+	const r6Rooted = (c: NodeId, depth = 0): boolean => {
+		const node = ast(c);
+		const root = node === undefined || node.named ? undefined : calleeRoot(node);
+		if(root === undefined || depth > 4) {
+			return false;
+		}
+		const vars = [...df.graph.outgoingEdges(root.info.id) ?? []].filter(([t, e]) => DfEdge.includesType(e, EdgeType.Reads) && !NodeId.isBuiltIn(t)).map(([t]) => t);
+		/* `C$set("public", "f", system)`, `A$methods(f = system)` add members after the fact */
+		if(vars.some(t => (callsOnDefinition.get(t) ?? []).some(u => /\$\s*(set|methods)$/.test(String(ast(u)?.lexeme ?? ''))))) {
+			return false;
+		}
+		const defs = vars.flatMap(t => definersOf(t));
+		return defs.length > 0 && defs.every(d => d !== undefined && (pureR6(d.id) || r6Rooted(d.id, depth + 1)));
+	};
 	const calls = [...df.graph.vertices(true)].filter(([, v]) => v.tag === VertexType.FunctionCall);
 	progress({ phase: 'sinks', message: `looking for sinks among ${calls.length} calls`, done: 0, total: calls.length });
 	await breathe();
@@ -427,13 +848,17 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			progress({ phase: 'sinks', message: `looking for sinks among ${calls.length} calls`, done: n, total: calls.length });
 			await breathe();
 		}
-		if(Dataflow.isQuoted(id, df.graph)) {
+		if(Dataflow.isQuoted(id, df.graph) && !quotedButRuns(id)) {
 			continue;
 		}
 		const q = qualified.get(id);
-		const name = q !== undefined ? String(Identifier.getName(q)) : String(Identifier.getName((v as { name: Parameters<typeof Identifier.getName>[0] }).name));
+		const name = unquoted(q !== undefined ? String(Identifier.getName(q)) : String(Identifier.getName((v as { name: Parameters<typeof Identifier.getName>[0] }).name)));
 		const ns = q !== undefined ? Identifier.getNamespace(q) as string | undefined : undefined;
 		const call = ns === undefined ? name : `${ns}::${name}`;
+		/* flowR models `Negate`, `Vectorize`, and `setClass` with a dispatch call of S7 that is not in the code: no call of the code */
+		if(name === 'S7_dispatch' && /-s7-/.test(String(id))) {
+			continue;
+		}
 		/* what flowR resolved the callee to: built-in or package functions, and function definitions of the code */
 		const builtins: { name: string, ns: string | undefined }[] = [];
 		let closures = 0;
@@ -450,6 +875,16 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 				calleeReads.push(target);
 			}
 		}
+		/* a call evaluated in data that may define its name: it calls what the data holds */
+		if(dynamicCap !== undefined) {
+			const nothing = builtins.length === 0 && closures === 0 && calleeReads.length === 0 && ns === undefined;
+			const hits = (masks.get(id) ?? []).filter(m => m.names === 'any' ? nothing : m.names.has(name));
+			if(hits.length > 0) {
+				const held = hits.flatMap(m => m.names === 'any' ? [] : [m.names.get(name)]).filter(x => x !== undefined);
+				candidates.push({ id, call: name, cap: dynamicCap, via: 'direct', tags: [], trace: [...calleeReads, ...held, ...hits.map(m => m.data)] });
+				continue;
+			}
+		}
 		/* the call by its name, and each function flowR resolved its callee to (`l$f()` with `l <- list(f = system)`) */
 		let direct: { cap: CompiledCapability, name: string, ns: string | undefined, call: string } | undefined;
 		for(const t of [{ name, ns }, ...builtins.filter(b => b.name !== name)]) {
@@ -462,8 +897,43 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 				direct = { cap, ...t, call: tc };
 			}
 		}
+		/* a function that has a capability only with a certain argument: `cat(x, file = path)` */
+		if(direct === undefined) {
+			const node = ast(id) as (AstNode & { arguments?: readonly ({ name?: { content?: string } } | '<>')[] }) | undefined;
+			const given = (node?.arguments ?? []).flatMap(a => a === '<>' || a.name?.content === undefined ? [] : [a.name.content]);
+			for(const c of given.length === 0 ? [] : caps) {
+				const hit = Object.entries(c.spec.withArgument ?? {}).some(([arg, res]) =>
+					/* R matches a named argument by its prefix */
+					given.some(g => arg.startsWith(g)) && res.some(r => nameMatches(new RegExp(r), name, ns === undefined ? undefined : call)));
+				if(hit) {
+					direct = { cap: c, name, ns, call };
+					break;
+				}
+			}
+		}
+		/*
+		 * `eval(quote(1 + 2))`: the code it runs is written right there, and its calls are looked at as calls (see
+		 * `quotedButRuns`), so the eval itself is no finding; not with an environment, which may change what the names mean
+		 */
+		if(direct !== undefined && (name === 'eval' || name === 'evalq') && (ns === undefined || ns === 'base')) {
+			const node = ast(id) as (AstNode & { arguments?: readonly ({ name?: { content?: string }, value?: AstNode } | '<>')[] }) | undefined;
+			const args = node?.arguments ?? [];
+			const only = args.length === 1 && args[0] !== '<>' ? args[0] : undefined;
+			const code = only !== undefined && (only.name === undefined || only.name.content === 'expr') ? only.value : undefined;
+			const literal = name === 'evalq' ? code !== undefined
+				: code?.type === 'RFunctionCall' && ['quote', 'expression'].includes(callName(code.info.id).name);
+			if(literal) {
+				continue;
+			}
+		}
 		if(direct !== undefined) {
-			candidates.push({ id, call: direct.call, cap: direct.cap, via: 'direct', tags: tagsOf(direct.name, direct.ns) });
+			/* a call evaluated in data may read its values from the data: they count too */
+			const data = (masks.get(id) ?? []).filter(m => m.names === 'any' || m.names.size > 0).map(m => m.data);
+			/* a function handed on as a value (`Negate(system)`, `sapply(x, FUN = system)`) runs with what the call it is handed to gets */
+			const self = ast(id);
+			const to = self?.type === 'RSymbol' ? handedTo(self) : undefined;
+			const trace = [...data, ...to === undefined ? [] : valuesHandedWith(to)];
+			candidates.push({ id, call: direct.call, cap: direct.cap, via: 'direct', tags: tagsOf(direct.name, direct.ns), ...trace.length > 0 ? { trace } : {} });
 			continue;
 		}
 		/*
@@ -477,8 +947,11 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			const rewritten = rewrites.length > 0;
 			const unresolved = builtins.length === 0 && closures === 0 && ((v as { origin: unknown }).origin === 'unnamed' || calleeReads.length > 0);
 			/* the value of a trusted package function (`d <- shiny::reactive(...); d()`) runs the code's own expression */
-			const fromTrusted = defs.length > 0 && defs.every(d => d !== undefined && trusted.some(r => r.test(d.name)));
-			if(rewritten || unresolved && !fromTrusted) {
+			const fromTrusted = defs.length > 0 && defs.every(d => d !== undefined && (trusted.some(r => r.test(d.name)) || knownFunction(d.id, id))) || r6Rooted(id);
+			/* a callee flowR resolved on one path, but computed on another (`f <- if (c) function(x) 1 else get(x)`) */
+			const partly = !unresolved && calleeReads.some(r => df.graph.getVertex(r)?.tag === VertexType.VariableDefinition
+				&& definersOf(r).some(d => d !== undefined && !Rewrites.has(d.name) && computedEnds(d.id).length > 0));
+			if(rewritten || partly || unresolved && !fromTrusted) {
 				const node = df.graph.idMap?.get(id);
 				const callee = String(node?.lexeme ?? name);
 				if(!allowed.some(r => r.test(callee))) {
@@ -520,6 +993,41 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		if(hit !== null) {
 			const sig = ctx.deps.signatures().functionOf(Identifier.make(name, ns))?.signature;
 			candidates.push({ id, call, cap: hit.cap, via: 'package', through: hit.through, contract: contractOf(sig), tags: tagsOf(hit.through, undefined) });
+		}
+	}
+	/* a function with a capability handed on as a value (`Negate(system)`, `Reduce(f, xs, system)`): the call it is handed to has it */
+	for(const [uid, uv] of df.graph.vertices(true)) {
+		if(uv.tag !== VertexType.Use || Dataflow.isQuoted(uid, df.graph) && !quotedButRuns(uid)) {
+			continue;
+		}
+		for(const [t, e] of df.graph.outgoingEdges(uid) ?? []) {
+			if(!DfEdge.includesType(e, EdgeType.Reads) || !NodeId.isBuiltIn(t)) {
+				continue;
+			}
+			const pf = NodeId.toPkgFn(t);
+			const fn = pf ? { name: pf[1], ns: pf[0] as string | undefined } : { name: String(NodeId.fromBuiltIn(t)), ns: undefined };
+			const fc = fn.ns === undefined ? fn.name : `${fn.ns}::${fn.name}`;
+			const cap = allowed.some(r => r.test(fc)) ? undefined : capabilityOf(caps, idx, fn.name, fn.ns);
+			const node = ast(uid);
+			const to = cap === undefined || cap.spec.dynamic || node === undefined ? undefined : handedTo(node);
+			if(cap === undefined || to === undefined) {
+				continue;
+			}
+			candidates.push({ id: to, call: `${callName(to).name}(${node?.lexeme ?? fn.name})`, cap, via: 'direct', tags: tagsOf(fn.name, fn.ns), trace: valuesHandedWith(to) });
+		}
+	}
+	/* a call inside an anonymous function handed to another call can get the values that call is given */
+	for(const c of candidates) {
+		const to = lambdaHandedTo(c.id);
+		const late = new Set(to === undefined ? [] : valuesHandedWith(to));
+		/* and a call inside a function that a wrapper or a function factory made (`v <- Vectorize(function(x) system(x)); v(y)`) */
+		for(let cur = ast(c.id), hops = 0; cur !== undefined && hops < 64; cur = ast(cur.info.parent), hops++) {
+			(madeCalledBy.get(cur.info.id) ?? []).forEach(x => late.add(x));
+		}
+		if(late.size > 0) {
+			c.late = [...late];
+			/* a method of a class reads its fields as free names (`c` of `system(c)` looks like base's `c()`): always count what the class is given */
+			c.lateAlways = to !== undefined && ['R6Class', 'setRefClass'].includes(callName(to).name);
 		}
 	}
 	progress({ phase: 'sinks', message: `${candidates.length} sink call(s) among ${calls.length} calls`, done: calls.length, total: calls.length });
@@ -567,17 +1075,62 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		 * a value of the enclosing scope (a global read in a closure) is, where the closure is called, what the
 		 * definitions active there hold: flowR links the read to them, trace those too (a few levels of closures)
 		 */
+		/* the values a lambda is handed, for its calls whose values are parameters or of unknown source */
+		{
+			const want = candidates.filter(c => c.late !== undefined && c.late.length > 0 && (c.lateAlways === true || (sources.get(c.id) ?? []).some(x => x.types.some(t => t === 'param' || t === 'unknown' || t === 'scope'))));
+			const part = [...new Set(want.flatMap(c => c.late ?? []))].map(t => SlicingCriterion.fromId(t));
+			if(part.length > 0) {
+				t0 = Date.now();
+				const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
+				queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms: Date.now() - t0, result: `the value sources of ${part.length} value(s) handed to anonymous functions` });
+				const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+				for(const c of want) {
+					sources.set(c.id, [...sources.get(c.id) ?? [], ...(c.late ?? []).flatMap(t => results[SlicingCriterion.fromId(t)] ?? [{ id: t, types: ['unknown'] }])]);
+				}
+			}
+		}
 		const traced = new Set<NodeId>();
+		/*
+		 * a call that returns a value of unknown source (`isolate(input$x)`, `r()` with `r <- reactive(input$x)`) may return
+		 * what it is given: its arguments, the call that made the function it calls, and what calls of that function
+		 * store in it (`v(input$x)` with `v <- reactiveVal()`)
+		 */
+		const inputsOfCall = (c: NodeId): NodeId[] => {
+			const out = new Set<NodeId>([c]);
+			for(const [r, e] of df.graph.outgoingEdges(c) ?? []) {
+				if(!DfEdge.includesType(e, EdgeType.Reads) || DfEdge.includesType(e, EdgeType.Argument) || NodeId.isBuiltIn(r)) {
+					continue;
+				}
+				for(const d of definersOf(r)) {
+					if(d !== undefined) {
+						out.add(d.id);
+					}
+				}
+				/* the other calls of the same function, with the values they hand it */
+				if(df.graph.getVertex(r)?.tag === VertexType.VariableDefinition) {
+					for(const [u, ue] of df.graph.edgesTo(r)) {
+						if(u !== c && DfEdge.includesType(ue, EdgeType.Reads) && df.graph.getVertex(u)?.tag === VertexType.FunctionCall) {
+							out.add(u);
+						}
+					}
+				}
+			}
+			return [...out];
+		};
 		for(let round = 0; round < 4; round++) {
 			const want = new Map<NodeId, NodeId[]>();
 			for(const list of sources.values()) {
 				for(const src of list) {
-					if(!src.types.includes('scope') || traced.has(src.id)) {
+					/* a parameter is, where its function is called, what that call hands it (`g(get(x))` for `g <- function(f) f(1)`) */
+					const scope = src.types.includes('scope') || src.types.includes('param');
+					const call = !scope && src.types.includes('unknown') && df.graph.getVertex(src.id)?.tag === VertexType.FunctionCall;
+					if(!scope && !call || traced.has(src.id)) {
 						continue;
 					}
 					traced.add(src.id);
-					const defs = [...df.graph.outgoingEdges(src.id) ?? []]
-						.filter(([t, e]) => DfEdge.includesType(e, EdgeType.DefinedByOnCall) && !NodeId.isBuiltIn(t)).map(([t]) => t);
+					const defs = scope ? [...df.graph.outgoingEdges(src.id) ?? []]
+						.filter(([t, e]) => DfEdge.includesType(e, EdgeType.DefinedByOnCall) && !NodeId.isBuiltIn(t)).map(([t]) => t)
+						: inputsOfCall(src.id);
 					if(defs.length > 0) {
 						want.set(src.id, defs);
 					}
