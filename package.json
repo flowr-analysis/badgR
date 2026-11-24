@@ -1,7 +1,7 @@
 {
   "name": "badger",
-  "version": "0.1.1",
-  "description": "Security tiers (gold, silver, bronze) for R scripts, Shiny apps, and projects, using flowR",
+  "version": "0.1.2",
+  "description": "Checks R scripts, Shiny apps, and projects against a policy of tiers (gold, silver, bronze), using flowR",
   "repository": "github:flowr-analysis/badgR",
   "homepage": "https://flowr-analysis.github.io/badgR/",
   "main": "dist/analyze.js",
