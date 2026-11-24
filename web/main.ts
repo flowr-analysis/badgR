@@ -1024,8 +1024,6 @@ liveButton.addEventListener('click', () => {
 
 /* ---------------------------------------------------------------- report */
 
-const TierColor: Record<string, string> = { gold: 't-gold', silver: 't-silver', bronze: 't-bronze', none: 't-none' };
-
 /** a link that downloads `content`, made only when it is clicked */
 function download(name: string, type: string, content: () => string): HTMLAnchorElement {
 	const a = el('a', 'button secondary small', name);
@@ -1341,7 +1339,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	$('result').hidden = false;
 	const pending = r.pending ?? [];
 	$('result').classList.toggle('partial', pending.length > 0);
-	const restore = incremental ? [openState($('ladder')), openState($('downloads')), openState($('lint'))] : [];
+	const restore = incremental ? [openState($('downloads')), openState($('lint'))] : [];
 	const marks = badgeMarks(r);
 	const svg = badgeSvg(r.tier.tier, r.tier.color, marks);
 	const img = el('img');
@@ -1360,7 +1358,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	note.hidden = pending.length === 0;
 	note.textContent = pending.length === 0 ? '' : `${plural(pending.length, 'linting rule')} still running. ${r.tier.tier === policy?.fallbackTier.name ? 'Their results show up below as they come in.' : 'If one reports something, the tier can still drop.'}`;
 
-	/* next to the badge: counts at a glance, then labeled rows, then the most telling findings */
+	/* under the badge: counts at a glance, then labeled rows */
 	const summary = $('summary');
 	summary.replaceChildren();
 	const stat = (text: string, cls: string, title: string, go?: () => void) => {
@@ -1432,31 +1430,6 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	}
 	summary.append(facts);
 
-	if(r.findings.length > 0) {
-		summary.append(el('p', 'top-label', 'most telling findings'));
-		const top = el('ul', 'top');
-		/* the three most telling kinds of finding, each once, with how many more are like it */
-		const kinds = new Map<string, Finding[]>();
-		for(const f of [...r.findings].sort((x, y) => rank(x) - rank(y))) {
-			kinds.set(`${f.call}|${f.capability}|${f.via}`, [...kinds.get(`${f.call}|${f.capability}|${f.via}`) ?? [], f]);
-		}
-		for(const [f, alike] of [...kinds.values()].slice(0, 3).map(fs => [fs[0], fs.length - 1] as const)) {
-			const item = el('li');
-			const a = el('a', 'jump', where(f));
-			a.href = '#code-view';
-			a.title = 'show in the code';
-			a.addEventListener('click', ev => {
-				ev.preventDefault();
-				selectFinding(f);
-			});
-			const call = el('code', '', f.call);
-			call.title = `${describe(f)}. Input types: ${listing(f.inputTypes) || 'none'}.`;
-			item.append(a, ' ', call, ' ', el('span', 'hint', `${f.capability}${f.tags?.length ? ` (flowR: ${f.tags.join(', ')})` : ''}${f.via === 'package' ? `, inside its package through ${f.through}` : ''}${alike > 0 ? `, and ${alike} more like it` : ''}`));
-			top.append(item);
-		}
-		summary.append(top);
-	}
-
 	/* every result in sentences, for a closer look and for the shared link */
 	const all = $('all-body');
 	all.replaceChildren();
@@ -1525,68 +1498,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	exportReview.title = 'your decisions as review.json, to keep or to load elsewhere';
 	$('review-actions').replaceChildren(exportReview, importReviewButton());
 
-	/* the tier ladder: one line per tier, the reasons fold out */
-	$('ladder').replaceChildren(...r.tier.checks.map(c => {
-		const spec = policy?.tiers.find(t => t.name === c.tier);
-		/* a tier met so far, whose linting rules still run, can still fail */
-		const waits = c.met ? (spec?.lint ?? []).filter(x => pending.includes(x)) : [];
-		const item = el('li', `${waits.length > 0 ? 'pending' : c.met ? 'met' : 'failed'}${c.tier === r.tier.tier ? ' mine' : ''}`);
-		/* only more than one reason folds: a single one is said in full on the line itself */
-		const folds = c.violations.length > 1;
-		const head = el(folds ? 'summary' : 'div', 'tier-line');
-		const name = el('span', `tier-name ${TierColor[c.tier] ?? ''}`, c.tier);
-		name.title = spec?.summary ?? spec?.description ?? '';
-		const mark = el('span', 'mark', waits.length > 0 ? '…' : c.met ? '✓' : '✗');
-		if(waits.length > 0) {
-			mark.title = `met so far, waiting for ${listing(waits)}`;
-		}
-		head.append(mark, name);
-		if(c.tier === r.tier.tier) {
-			head.append(el('span', 'yours', pending.length > 0 ? 'so far' : 'assigned'));
-		}
-		/* first what the tier asks for, then why the code misses it */
-		if(spec?.summary) {
-			head.append(el('span', 'tier-req', spec.summary));
-		}
-		if(c.violations.length > 0) {
-			const first = concreteReason(r, c.violations[0], c.violations.length - 1);
-			first.prepend(el('strong', '', 'Fails because '));
-			first.classList.add('why');
-			head.append(first);
-		}
-		if(folds) {
-			const d = el('details');
-			d.dataset.key = c.tier;
-			d.open = c === above;
-			const ul = el('ul');
-			ul.append(...c.violations.slice(1).map(v => {
-				const li = el('li');
-				li.append(sentence(v.reason));
-				const fs = v.findings.map(id => r.findings.find(f => f.id === id)).filter((f): f is Finding => f !== undefined);
-				for(const f of fs.slice(0, 4)) {
-					const a = el('a', 'jump', where(f));
-					a.href = '#code-view';
-					a.title = `${f.call} ${describe(f)}`;
-					a.addEventListener('click', ev => {
-						ev.preventDefault();
-						selectFinding(f);
-					});
-					li.append(' ', a);
-				}
-				if(fs.length > 4) {
-					li.append(el('span', 'hint', ` and ${fs.length - 4} more`));
-				}
-				return li;
-			}));
-			d.append(head, ul);
-			item.append(d);
-		} else {
-			item.append(head);
-		}
-		return item;
-	}));
-
-	restore.slice(0, 2).forEach(f => f());
+	restore[0]?.();
 	if(!incremental) {
 		renderFindings(r);
 	}
@@ -1601,59 +1513,8 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	drawn = { files, target: r.target, findings: findingIds(r), lintResults };
 }
 
-/** the matrix and the findings table, which only change with the findings */
+/** the findings table, which only changes with the findings */
 function renderFindings(r: Report): void {
-	/* sink class × origin, every class and origin of the policy */
-	const classes = policy ? [...new Set(Object.values(policy.capabilities).map(c => c.class))] : [];
-	const allClasses = [...new Set([...classes, ...r.findings.map(f => f.class)])];
-	const allOrigins = [...new Set([...policy ? Object.keys(policy.origins) : [], ...r.findings.flatMap(f => f.origins)])];
-	const matrix = $('matrix');
-	const max = Math.max(1, ...allClasses.flatMap(c => allOrigins.map(o => r.findings.filter(f => f.class === c && f.origins.includes(o)).length)));
-	const head = el('tr');
-	head.append(el('th'), ...allOrigins.map(o => {
-		const th = el('th', 'n');
-		th.append(link(Docs.inputSources, ow(o), `${sentence(OriginLong[o] ?? o)}, found with flowR's input-sources query`));
-		return th;
-	}));
-	/* per class, a row of all its findings and, when the code has files of several roles, a row per role */
-	const roles = FileRoles.filter(x => r.findings.some(f => roleOfFinding(f) === x));
-	const cellRow = (c: string, label: HTMLElement, fs: readonly Finding[], cls = '') => {
-		const tr = el('tr', cls);
-		tr.append(label);
-		for(const o of allOrigins) {
-			const calls = fs.filter(f => f.class === c && f.origins.includes(o));
-			const n = calls.length;
-			const td = el('td', 'n');
-			const span = el('span', n ? (o === 'outside' ? 'hot' : 'warm') : 'zero', n ? String(n) : '·');
-			span.title = n ? `${listing([...new Set(calls.slice(0, 12).map(f => `${f.call} (${where(f)})`))])}${n > 12 ? ', …' : ''} ${n === 1 ? 'gets' : 'get'} ${OriginLong[o] ?? o}` : `no ${cw(c)} call gets ${OriginLong[o] ?? o}`;
-			if(n) {
-				span.style.opacity = String(0.55 + 0.45 * n / max);
-				span.classList.add('clickable');
-				span.addEventListener('click', () => selectFinding(calls[0]));
-			}
-			td.append(span);
-			tr.append(td);
-		}
-		return tr;
-	};
-	const rows = allClasses.flatMap(c => {
-		const th = el('th', '', cw(c));
-		th.title = policy ? `capabilities of class ${c}: ${listing(Object.entries(policy.capabilities).filter(([, v]) => v.class === c).map(([k, v]) => `${k} (${v.description ?? ''})`))}` : '';
-		const out = [cellRow(c, th, r.findings)];
-		if(roles.length > 1) {
-			for(const role of roles.filter(x => r.findings.some(f => f.class === c && roleOfFinding(f) === x))) {
-				const shipped = policy?.shipped.includes(role) ?? true;
-				const rth = el('th', 'm-role', RoleWord[role]);
-				rth.title = `${RoleLong[role]}, from flowR's file roles; ${shipped ? 'shipped: the tiers count it' : 'not shipped: the tiers do not count it unless a rule names it'}`;
-				out.push(cellRow(c, rth, r.findings.filter(f => roleOfFinding(f) === role), `role-row${shipped ? '' : ' unshipped'}`));
-			}
-		}
-		return out;
-	});
-	matrix.replaceChildren(el('thead'), el('tbody'));
-	matrix.firstElementChild?.append(head);
-	matrix.lastElementChild?.append(...rows);
-
 	/* findings with filters; the filters, groups, and folds stay while the same report is drawn again */
 	if(view.target !== r.target || view.count !== r.findings.length) {
 		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > 8 ? 'capability' : 'none', expanded: new Set(), full: new Set(), active: new Set() });
@@ -2111,6 +1972,8 @@ function renderCode(r: Report, files: readonly SourceFile[], incremental = false
 		if(quiet) {
 			return;
 		}
+		/* the code is folded until a finding or result is picked */
+		($('code-block') as HTMLDetailsElement).open = true;
 		view.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 		const target = loc ? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"] .src > span[class^="m-"]`) ?? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"]`) : null;
 		if(target) {
