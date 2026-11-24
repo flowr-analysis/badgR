@@ -813,13 +813,13 @@ function playgroundLink(r: Report, files: readonly SourceFile[]): HTMLElement {
 		code: main.content, name: main.path, files: rFiles.filter(f => f !== main).map(f => ({ name: f.path, code: f.content })), marks
 	});
 	if(url === undefined || url.length > 4000) {
-		const b = el('button', 'button secondary small', 'flowR playground');
+		const b = el('button', 'button secondary small', 'Open in flowR playground');
 		b.type = 'button';
 		b.disabled = true;
 		b.title = 'the code is too long for a link to the flowR playground';
 		return b;
 	}
-	const a = link(url, 'flowR playground', 'open this code in flowR\'s playground, with the lines of the findings marked, to see its dataflow, slices, and linting results');
+	const a = link(url, 'Open in flowR playground', 'open this code in flowR\'s playground, with the lines of the findings marked, to see its dataflow, slices, and linting results');
 	a.className = 'button secondary small';
 	return a;
 }
@@ -830,7 +830,7 @@ function shareMenu(r: Report): HTMLElement {
 	const menu = el('details', 'menu');
 	menu.id = 'share-menu';
 	menu.dataset.key = 'share';
-	const summary = el('summary', 'button secondary small', 'copy link');
+	const summary = el('summary', 'button secondary small', 'Copy link');
 	summary.title = shareable
 		? 'links to this result. The code is inside the link and never goes to a server.'
 		: 'uploaded files cannot go into a link. Copy the Markdown or download report.md instead.';
@@ -1413,15 +1413,14 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	if(!r.analyzed) {
 		stats.append(stat('not analyzed', 'bad', r.error ?? 'flowR could not analyze the code'));
 	} else {
-		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? '' : 'ok', 'calls that can do something the policy watches, such as run commands or use the network'));
-		for(const c of [...new Set(r.findings.map(f => f.class))]) {
-			const n = r.findings.filter(f => f.class === c).length;
-			stats.append(stat(`${n} ${cw(c)}`, `c-${c}`, `${sentence(ClassLong[c])}. Click to see them.`, toFindings));
-		}
+		/* one count of the findings; what kinds they are is in its tooltip and in the table */
+		const kinds = [...new Set(r.findings.map(f => f.class))].map(c => `${r.findings.filter(f => f.class === c).length} ${cw(c)}`);
 		const outside = r.findings.filter(f => f.origins.includes('outside')).length;
-		if(outside > 0) {
-			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'these calls get values from users, files, or the network. Click to see them.', toFindings));
-		}
+		const worst = r.findings.some(f => f.class === 'dangerous') ? 'c-dangerous' : outside > 0 ? 'c-outside' : '';
+		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? worst : 'ok',
+			r.findings.length === 0 ? 'no call can do something the policy watches, such as run commands or use the network'
+				: `${listing(kinds)}${outside > 0 ? `; ${outside} with values from users, files, or the network` : ''}. Click to see them.`,
+			r.findings.length ? toFindings : undefined));
 		const hits = r.lint.filter(l => l.count > 0);
 		const n = hits.reduce((s2, l) => s2 + l.count, 0);
 		const fixes = hits.flatMap(l => l.results).filter(x => x.quickFix).length;
@@ -1508,7 +1507,6 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 			x.quickFix ? `. Suggested fix: ${x.quickFix.map(q => q.replacement ?? 'remove it').join(' or ')}.` : '.');
 		return item;
 	})));
-	$('all-results').hidden = all.childElementCount === 0;
 	/* what badger asked flowR, each linked to its documentation */
 	const meta = $('verdict-meta');
 	meta.replaceChildren(`${plural(r.files.length, 'R file')} · ${pending.length > 0 ? 'still running' : duration(r.ms)} · flowR ${r.flowrVersion} · uses flowR's `,
@@ -1533,7 +1531,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	const exportReview = download('review.json', 'application/json', () => JSON.stringify(reviewFile(r.findings.map(reviewOf).filter((e): e is ReviewEntry => e !== undefined)), null, 2));
 	exportReview.textContent = 'export review';
 	exportReview.title = 'your decisions as review.json, to keep or to load elsewhere';
-	$('review-actions').replaceChildren(exportReview, importReviewButton());
+	$('review-actions').replaceChildren(el('span', 'hint', 'Your review stays in this browser.'), exportReview, importReviewButton());
 
 	restore[0]?.();
 	if(!incremental) {
@@ -2240,7 +2238,7 @@ function renderLint(r: Report, incremental = false): void {
 		: `${hits} of ${r.lint.length} report something`;
 	const fixes = allFixes(r);
 	const bar = el('div', 'fixes-bar');
-	if(fixes.count > 0) {
+	if(fixes.count > 1) {
 		bar.append(el('span', '', `flowR suggests ${plural(fixes.count, 'fix')}${fixes.files > 1 ? ` in ${fixes.files} files` : ''}. `));
 		if(last?.fromEditor && last.files.length === 1) {
 			const apply = el('button', 'button small', 'apply all');
@@ -2263,7 +2261,7 @@ function renderLint(r: Report, incremental = false): void {
 	}
 	/* which query runs, and which tiers need which rule */
 	const intro = el('p', 'lint-intro hint');
-	intro.append('badger runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '. A rule a tier needs must report nothing for that tier; the other rules are advice and do not change the tier.');
+	intro.append('Rules of flowR\'s ', link(Docs.linter, 'linter query'), '. A tier needs its rules to report nothing; the others are advice.');
 	const neededFor = (rule: string) => {
 		const tiers = (policy?.tiers ?? []).filter(t => t.lint.includes(rule)).map(t => t.name);
 		return tiers.length > 0 ? [el('span', 'hint needed', `needed for ${listing(tiers)}`)] : [];
@@ -2278,7 +2276,8 @@ function renderLint(r: Report, incremental = false): void {
 		return row;
 	});
 	/* every rule on its own line, those that report something first */
-	$('lint').replaceChildren(intro, ...(fixes.count > 0 ? [bar] : []), ...[...r.lint.filter(l => !clean.includes(l)), ...clean].map(l => {
+	/* a single fix shows with its result; the bar is for applying several at once */
+	$('lint').replaceChildren(intro, ...(fixes.count > 1 ? [bar] : []), ...[...r.lint.filter(l => !clean.includes(l)), ...clean].map(l => {
 		const state = l.error ? 'failed' : l.count > 0 ? 'hits' : 'clean';
 		const name = link(l.docs ?? Docs.lintOverview, l.rule, l.about ?? l.title);
 		name.className = 'rule';

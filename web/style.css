@@ -364,7 +364,7 @@ details.all li { margin: 2px 0; }
 button.stat { cursor: pointer; }
 button.stat:hover { border-color: var(--accent); }
 .stat.ok { color: var(--ok); border-color: var(--ok); }
-.stat.bad, .stat.c-severe, .stat.c-outside { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+.stat.bad, .stat.c-severe, .stat.c-dangerous, .stat.c-outside { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
 .stat.c-outside { background: var(--bad-bg); }
 .stat.c-lint { color: var(--accent); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 6px; }
@@ -630,5 +630,5 @@ html, body { overflow-x: clip; }
 /* a link with view=: only the export, as text */
 body.raw-view > :not(#raw) { display: none !important; }
 pre.raw { margin: 0; padding: var(--s3, 16px); white-space: pre-wrap; word-break: break-word; font: 13px/1.45 var(--mono); color: var(--ink); background: var(--bg, transparent); }
-.review-actions { justify-content: flex-end; gap: var(--s1); }
+.review-actions { justify-content: flex-end; align-items: center; gap: var(--s2); margin-top: var(--s2); }
 body.drag-over .pane.input { outline: 2px dashed var(--accent); outline-offset: -6px; }
