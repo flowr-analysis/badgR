@@ -119,7 +119,7 @@ describe('links, exports, and the policy', () => {
 		page.on('pageerror', e => errors.push(e.message));
 		await page.goto(`${origin}/#z=${b64url('system(readline())\n')}&p=${b64url(customPolicy)}`);
 		expect(await tierOf(page)).toBe('none');
-		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: none, custom policy');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badger: none, custom policy');
 		await page.locator('#notice:not([hidden])', { hasText: 'its own policy' }).waitFor();
 		/* the link the page writes names the policy again, in the same order */
 		expect(page.url()).toMatch(/#z=[^&]+&p=[^&]+&tier=none&n=1$/);
@@ -161,7 +161,7 @@ describe('links, exports, and the policy', () => {
 		const sarif = JSON.parse(fs.readFileSync(await file.path(), 'utf-8')) as { version: string, runs: { results: { ruleId: string, hostedViewerUri?: string }[], properties: { tier: string } }[] };
 		expect(sarif.version).toBe('2.1.0');
 		expect(sarif.runs[0].properties.tier).toBe('none');
-		const shell = sarif.runs[0].results.find(r => r.ruleId === 'badgr/shell');
+		const shell = sarif.runs[0].results.find(r => r.ruleId === 'badger/shell');
 		expect(shell?.hostedViewerUri).toMatch(/#z=[^&]+&tier=none&n=1&at=f%3Ascript.R%3A2%3Abase%253A%253Asystem$/);
 		/* the result's link selects the finding */
 		const again = await browser.newPage();
@@ -207,17 +207,17 @@ describe('links, exports, and the policy', () => {
 		const page = await browser.newPage();
 		await page.goto(`${origin}/#z=${b64url('system(readline())\n')}`);
 		expect(await tierOf(page)).toBe('none');
-		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: none');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badger: none');
 		await page.locator('#findings tbody tr .rv-to-fix').first().click();
-		await page.locator('#badge img[alt="badgR: none"]').waitFor();
+		await page.locator('#badge img[alt="badger: none"]').waitFor();
 		await page.locator('#findings tbody tr .rv-tolerated').first().click();
-		await page.locator('#badge img[alt="badgR: none, all findings reviewed"]').waitFor();
+		await page.locator('#badge img[alt="badger: none, all findings reviewed"]').waitFor();
 		/* the review goes into the link, which brings the mark back */
 		expect(page.url()).toContain('&rv=');
 		const again = await browser.newPage();
 		await again.goto(page.url());
 		expect(await tierOf(again)).toBe('none');
-		await again.locator('#badge img[alt="badgR: none, all findings reviewed"]').waitFor();
+		await again.locator('#badge img[alt="badger: none, all findings reviewed"]').waitFor();
 		await again.close();
 		await page.close();
 	}, 180_000);
@@ -253,9 +253,19 @@ describe('links, exports, and the policy', () => {
 		await fn.fill('^(broken$');
 		await fn.press('Enter');
 		await page.locator('#policy-status', { hasText: 'default policy' }).waitFor();
-		await fn.fill('^my_eval$');
-		await fn.press('Enter');
-		await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor();
+		/* the grid may still redraw after the refusal and drop a key pressed meanwhile: enter it again until it lands */
+		for(let tries = 0; ; tries++) {
+			await fn.fill('^my_eval$');
+			await fn.press('Enter');
+			try {
+				await page.locator('#policy-status', { hasText: 'custom policy' }).waitFor({ timeout: 5_000 });
+				break;
+			} catch(e) {
+				if(tries >= 20) {
+					throw e;
+				}
+			}
+		}
 		await page.locator('.vcap-fns .chip', { hasText: '^my_eval$' }).waitFor();
 		await page.close();
 	}, 180_000);
@@ -373,10 +383,10 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
-	test('the badgR version and the footer link to the releases', async() => {
+	test('the badger version and the footer link to the releases', async() => {
 		const { page, errors } = await open();
 		/* the versions show once, in the footer */
-		expect(await page.locator('#footer #v-badgr').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
+		expect(await page.locator('#footer #v-badger').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
 		expect(await page.locator('header .ver').count()).toBe(0);
 		expect(await page.locator('#footer a', { hasText: 'source' }).getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR');
 		expect(errors).toEqual([]);
@@ -402,7 +412,7 @@ describe('the playground', () => {
 		const errors: string[] = [];
 		page.on('pageerror', e => errors.push(e.message));
 		const policy = fs.readFileSync(path.join(__dirname, '..', 'policies', 'default.yaml'), 'utf-8').replace(/^lintTimeout:.*$/m, 'lintTimeout: 0.001');
-		await page.addInitScript(text => localStorage.setItem('badgr.policy', text), policy);
+		await page.addInitScript(text => localStorage.setItem('badger.policy', text), policy);
 		await page.goto(origin + '/');
 		await page.setInputFiles('#file-input', path.join(fixtures, 'gold/app.R'));
 		expect(await tierOf(page)).not.toBe('gold');
@@ -499,7 +509,7 @@ describe('the playground', () => {
 		const reordered = '# the same policy\n' + JSON.stringify(Object.fromEntries(Object.entries(doc).reverse()));
 		await page.goto(`${origin}/#z=${b64url('x <- 1\n')}&p=${b64url(reordered)}&tier=${encodeURIComponent('<img src=x onerror=alert(1)>')}&n=abc`);
 		expect(await tierOf(page)).toBe('gold');
-		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badgR: gold');
+		expect(await page.locator('#badge img').getAttribute('alt')).toBe('badger: gold');
 		expect(page.url()).not.toContain('&p=');
 		expect(await page.locator('#shared').innerText()).not.toMatch(/NaN|onerror/);
 		expect(errors).toEqual([]);
