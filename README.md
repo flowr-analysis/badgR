@@ -2,7 +2,7 @@
 
 # badger
 
-badger gives R scripts, Shiny apps, and R projects a security tier: gold, silver, bronze, or none.
+badger checks R scripts, Shiny apps, and R projects against a policy and gives them the strictest of its tiers they meet: gold, silver, bronze, or none.
 It uses [flowR](https://github.com/flowr-analysis/flowr) to find risky calls (running code or
 commands, files, the network) and where their values come from.
 
