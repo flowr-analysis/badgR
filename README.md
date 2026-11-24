@@ -90,7 +90,7 @@ npm run web:data -- --only shiny,glue           # package data for a few package
 CI runs the tests and the Docker image on every push. On `main` it also builds the playground with the
 package data of all of CRAN and deploys it to GitHub Pages, and pushes the image to Docker Hub: `main` as `eagleoutice/badger:latest`, a tag `v1.2.3` as
 `eagleoutice/badger:1.2.3`; on `main` it also sets the image's page on Docker Hub to
-[`docker/README.md`](docker/README.md). That needs one repository secret, `DOCKERHUB_TOKEN`, an access
+[`docker/README.md`](docker/README.md) with the image's `--help` appended. That needs one repository secret, `DOCKERHUB_TOKEN`, an access
 token of the Docker Hub user `eagleoutice`; without it, CI skips the push with a warning.
 
 GPL-3.0-or-later, like flowR.
