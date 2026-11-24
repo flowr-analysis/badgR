@@ -360,9 +360,9 @@ describe('the playground', () => {
 
 	test('the badgR version and the footer link to the releases', async() => {
 		const { page, errors } = await open();
-		expect(await page.locator('#v-badgr').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
-		const foot = page.locator('#footer a', { hasText: /^badgR / });
-		expect(await foot.getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
+		/* the versions show once, in the footer */
+		expect(await page.locator('#footer #v-badgr').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
+		expect(await page.locator('header .ver').count()).toBe(0);
 		expect(await page.locator('#footer a', { hasText: 'source' }).getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR');
 		expect(errors).toEqual([]);
 		await page.close();

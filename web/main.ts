@@ -78,8 +78,6 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 };
 worker.postMessage({ type: 'warm', base } satisfies WorkerRequest);
 
-const BadgrReleases = 'https://github.com/flowr-analysis/badgR/releases';
-const DockerHub = 'https://hub.docker.com/r/eagleoutice/badgr';
 
 function showVersions(): void {
 	const f = $<HTMLAnchorElement>('v-flowr');
@@ -87,9 +85,8 @@ function showVersions(): void {
 	f.href = `https://github.com/flowr-analysis/flowr/releases/tag/v${FLOWR_VERSION}`;
 	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
 	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
-	const foot = $('footer');
-	foot.replaceChildren(link(BadgrReleases, `badgR ${BADGR_VERSION}`), ' (', link('https://github.com/flowr-analysis/badgR', 'source'), ') · ', link(f.href, `flowR ${FLOWR_VERSION}`), ' · ', link(DockerHub, 'Docker image'),
-		` · signature database ${sigdbTag ?? '?'}, latest version of each CRAN package (the command line has every version) · GPL-3.0`);
+	$('footer-note').replaceChildren(link('https://github.com/flowr-analysis/badgR', 'source'),
+		' · the latest version of each CRAN package (the command line has every version) · GPL-3.0');
 }
 showVersions();
 if(BADGR_LIVE) {
