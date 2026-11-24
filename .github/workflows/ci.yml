@@ -67,6 +67,25 @@ jobs:
           fi
           docker tag badger "eagleoutice/badger:$TAG"
           docker push "eagleoutice/badger:$TAG"
+      # the page of the image on Docker Hub: docker/README.md, with the help text and the link to the playground
+      - name: describe
+        if: github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            exit 0
+          fi
+          if ! JWT=$(jq -n --arg p "$DOCKERHUB_TOKEN" '{username: "eagleoutice", password: $p}' \
+            | curl -fsS -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -er .token); then
+            echo "::warning::could not log in to Docker Hub to update the description"
+            exit 0
+          fi
+          jq -n --rawfile readme docker/README.md \
+            '{description: "Security tiers (gold, silver, bronze) for R code, using flowR", full_description: $readme}' \
+            | curl -fsS -o /dev/null -X PATCH -H "Authorization: JWT $JWT" -H 'Content-Type: application/json' -d @- \
+              https://hub.docker.com/v2/repositories/eagleoutice/badger/ \
+            || echo "::warning::could not update the description on Docker Hub (the token needs read, write, and delete access)"
 
   # the playground, built from main with the package data of all of CRAN
   pages-build:

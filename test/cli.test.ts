@@ -14,6 +14,13 @@ function cliElsewhere(...args: string[]) {
 }
 
 describe('the command line', () => {
+	test('the README of the Docker image shows the current --help', () => {
+		const r = cli('--help');
+		expect(r.status).toBe(0);
+		const readme = fs.readFileSync(path.join(root, 'docker', 'README.md'), 'utf-8');
+		expect(/```text\n([\s\S]*)```\s*$/.exec(readme)?.[1]).toBe(r.stdout);
+	});
+
 	test('a report larger than the pipe buffer reaches stdout complete', () => {
 		const r = cli('--json', path.join(root, 'test', 'fixtures', 'large'));
 		expect(r.status).toBe(0);
