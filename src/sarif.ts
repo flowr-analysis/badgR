@@ -4,7 +4,7 @@
  * exports the same file as the command line.
  *
  * What stays the same between runs, so that a code scanner tracks a finding instead of opening a new one:
- * the rule ids (`badgr/<capability>`, `flowr/<linting rule>`), and each result's `partialFingerprints`,
+ * the rule ids (`badger/<capability>`, `flowr/<linting rule>`), and each result's `partialFingerprints`,
  * which hash what identifies a finding for a review (file, call, capability, how it is reached, and the
  * text of its line), not its line number.
  */
@@ -124,7 +124,7 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 	}
 	const results: Record<string, unknown>[] = [];
 	for(const f of r.findings) {
-		const id = `badgr/${f.capability}`;
+		const id = `badger/${f.capability}`;
 		const cap = opts.capabilities?.[f.capability];
 		const index = ruleIndex(id, () => ({
 			name:             f.capability,
@@ -145,7 +145,7 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 			level:     Level[f.class] ?? 'warning',
 			message:   { text: `${f.call} ${cap?.description ?? f.capability}${f.via === 'package' ? ` inside the package${f.through ? ` (through ${f.through})` : ''}` : ''}, with ${originWords(f)}.` },
 			locations: location(file, f.loc),
-			partialFingerprints: { 'badgrFinding/v1': fingerprint(JSON.stringify([file ?? '', f.call, f.capability, f.via, normalizeLine(lineText)])) },
+			partialFingerprints: { 'badgerFinding/v1': fingerprint(JSON.stringify([file ?? '', f.call, f.capability, f.via, normalizeLine(lineText)])) },
 			...(link ? { hostedViewerUri: link } : {}),
 			...(suppressed ? { suppressions: [{ kind: 'external', status: 'accepted', ...(f.review?.note ? { justification: f.review.note } : {}) }] } : {}),
 			properties: {
@@ -174,7 +174,7 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 				level:     'warning',
 				message:   { text: x.message },
 				locations: location(file, x.loc),
-				partialFingerprints: { 'badgrLint/v1': fingerprint(JSON.stringify([l.rule, file ?? '', x.message, normalizeLine(lineText)])) },
+				partialFingerprints: { 'badgerLint/v1': fingerprint(JSON.stringify([l.rule, file ?? '', x.message, normalizeLine(lineText)])) },
 				...(link ? { hostedViewerUri: link } : {}),
 				...(x.quickFix?.some(q => q.loc && validRegion(q.loc)) && opts.fileOf(x.file) ? { fixes: x.quickFix.filter(q => q.loc && validRegion(q.loc)).map(q => ({
 					description:     { text: q.description },
@@ -193,12 +193,12 @@ export function sarifRun(r: Report, opts: SarifOptions): Record<string, unknown>
 	const review = reviewSummary(r.findings);
 	return {
 		tool: { driver: {
-			name: 'badgR', version: r.toolVersion, semanticVersion: r.toolVersion, informationUri: Home,
+			name: 'badger', version: r.toolVersion, semanticVersion: r.toolVersion, informationUri: Home,
 			rules: [...rules.values()]
 		}, extensions: [{ name: 'flowR', version: r.flowrVersion, informationUri: 'https://github.com/flowr-analysis/flowr' }] },
 		originalUriBaseIds: { SRCROOT: { description: { text: 'the analyzed folder' } } },
 		invocations: [{ executionSuccessful: r.analyzed, ...(notes.length ? { toolExecutionNotifications: notes } : {}) }],
-		automationDetails: { id: `badgr/${r.policy.name}/` },
+		automationDetails: { id: `badger/${r.policy.name}/` },
 		results,
 		properties: {
 			tier: r.tier.tier, color: r.tier.color, review: r.tier.review,

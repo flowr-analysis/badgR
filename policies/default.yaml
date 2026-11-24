@@ -1,4 +1,4 @@
-# badgR policy: the tiers of "A Threat Model for R / Shiny Applications".
+# badger policy: the tiers of "A Threat Model for R / Shiny Applications".
 # A finding is a call that reaches a capability: its class, `via` (direct | package), and the origins of its values.
 # A tier is assigned when none of its `forbid` rules matches a finding and its `lint` rules report nothing.
 # In a forbid rule, the origin `none` matches findings flowR traced no value for.
@@ -130,7 +130,7 @@ trusted:
   # testthat expectations evaluate the quoted code the author passes in (quasi_label), not strings
   - '^testthat::(expect_\w+|test_that|describe|it|context|skip\w*|succeed|fail|local_\w+|with_\w+|test_path)$'
   - '^shiny::(observe|observeEvent|reactive|eventReactive|req|isolate|render\w*|bindEvent|bindCache|validate|need|outputOptions|moduleServer|callModule|NS)$'
-  # reactive values and their timing: they hold and pass on the values they are given (badgR traces those)
+  # reactive values and their timing: they hold and pass on the values they are given (badger traces those)
   - '^shiny::(reactiveVal|reactiveValues|debounce|throttle|reactivePoll|reactiveTimer|invalidateLater|freezeReactiveValue)$'
 
 # calls that never become findings, whatever they can do: regular expressions on

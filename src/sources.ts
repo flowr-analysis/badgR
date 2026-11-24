@@ -265,12 +265,12 @@ export function describeUrl(url: string): { kind: UrlKind, note: string } | unde
 		return { kind: 'playground', note: 'a flowR playground link: its code is read from the link, without any request' };
 	}
 	if(/#(.*&)?(z|code)=/.test(u)) {
-		return { kind: 'own', note: 'a badgR link: its code is read from the link, without any request' };
+		return { kind: 'own', note: 'a badger link: its code is read from the link, without any request' };
 	}
 	const inner = ownLinkUrl(u);
 	if(inner !== undefined) {
 		const d = describeUrl(inner);
-		return d === undefined ? undefined : { kind: d.kind, note: `a badgR link to ${inner}: ${d.note}` };
+		return d === undefined ? undefined : { kind: d.kind, note: `a badger link to ${inner}: ${d.note}` };
 	}
 	if(/^https?:\/\/gist\.github\.com\//.test(u)) {
 		return { kind: 'gist', note: 'a GitHub gist, through api.github.com' };
@@ -366,7 +366,7 @@ function ownLinkUrl(url: string): string | undefined {
 }
 
 /**
- * Any link: a flowR playground or badgR link (read from the link itself), a GitHub repository, folder,
+ * Any link: a flowR playground or badger link (read from the link itself), a GitHub repository, folder,
  * file, or gist, a GitLab project, a CRAN package (from its GitHub mirror), or a zip archive or R file
  * on a server that allows downloads from other sites.
  */
@@ -404,7 +404,7 @@ export async function fromUrl(url: string, progress: (msg: string) => void = () 
 		return fromGitHub(`https://github.com/bioc/${biocPackage(url) as string}`, progress);
 	}
 	if(kind === 'shiny-deployment') {
-		throw new SourceError('This is a running Shiny app. Its server does not hand out the app\'s code, so badgR cannot read it from here. Give the GitHub or GitLab repository of the app, or upload its folder.');
+		throw new SourceError('This is a running Shiny app. Its server does not hand out the app\'s code, so badger cannot read it from here. Give the GitHub or GitLab repository of the app, or upload its folder.');
 	}
 	if(kind === 'gitlab') {
 		const m = /^https?:\/\/([^/]+)\/(.+?)(?:\/-\/(?:tree|blob)\/([^/]+)(?:\/(.*))?)?\/?(?:[?#].*)?$/.exec(url);

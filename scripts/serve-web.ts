@@ -32,7 +32,7 @@ export function serve(port: number, live = false): http.Server {
 			return;
 		}
 		res.writeHead(200, { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': live ? 'no-store' : 'max-age=60' }).end(fs.readFileSync(file));
-	}).listen(port, '127.0.0.1', () => console.log(`badgR playground on http://127.0.0.1:${port}/${live ? ' (reloads on change)' : ''}`));
+	}).listen(port, '127.0.0.1', () => console.log(`badger playground on http://127.0.0.1:${port}/${live ? ' (reloads on change)' : ''}`));
 }
 
 if(require.main === module) {

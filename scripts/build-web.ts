@@ -43,8 +43,8 @@ const flowrVersion = (JSON.parse(fs.readFileSync(path.join(root, 'node_modules',
 export function options(live: boolean): BuildOptions[] {
 	const common: BuildOptions = {
 		bundle:        true,
-		minify:        !process.env.BADGR_WEB_DEBUG && !live,
-		sourcemap:     process.env.BADGR_WEB_DEBUG || live ? 'inline' : false,
+		minify:        !process.env.BADGER_WEB_DEBUG && !live,
+		sourcemap:     process.env.BADGER_WEB_DEBUG || live ? 'inline' : false,
 		format:        'iife',
 		mainFields:    ['browser', 'module', 'main'],
 		platform:      'browser',
@@ -53,8 +53,8 @@ export function options(live: boolean): BuildOptions[] {
 		logLevel:      'warning',
 		define:        {
 			'process.env.NODE_ENV': '"production"', '__dirname': '"/"', '__filename': '"/main.js"',
-			'BADGR_VERSION': JSON.stringify(version),
-			'FLOWR_VERSION': JSON.stringify(flowrVersion), 'BADGR_LIVE': String(live)
+			'BADGER_VERSION': JSON.stringify(version),
+			'FLOWR_VERSION': JSON.stringify(flowrVersion), 'BADGER_LIVE': String(live)
 		},
 		banner:        { js: ProcessShim },
 		plugins:       [stubNodeBuiltins],
@@ -76,8 +76,8 @@ export function copyStatic(): void {
 	for(const f of ['index.html', 'style.css']) {
 		fs.copyFileSync(path.join(root, 'web', f), path.join(out, f));
 	}
-	fs.writeFileSync(path.join(out, 'badgr-logo.svg'), logoSvg(128));
-	fs.writeFileSync(path.join(out, 'badgr-icon.svg'), logoSvg(64, false));
+	fs.writeFileSync(path.join(out, 'badger-logo.svg'), logoSvg(128));
+	fs.writeFileSync(path.join(out, 'badger-icon.svg'), logoSvg(64, false));
 	fs.writeFileSync(path.join(out, '.nojekyll'), '');
 }
 

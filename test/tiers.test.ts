@@ -54,7 +54,7 @@ describe('the default policy formalizes the tiers of the threat model', () => {
 
 describe('policy validation', () => {
 	function load(yaml: string) {
-		const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-')), 'p.yaml');
+		const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'badger-')), 'p.yaml');
 		fs.writeFileSync(f, yaml);
 		return () => loadPolicy(f);
 	}

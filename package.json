@@ -1,5 +1,5 @@
 {
-  "name": "badgr",
+  "name": "badger",
   "version": "0.1.1",
   "description": "Security tiers (gold, silver, bronze) for R scripts, Shiny apps, and projects, using flowR",
   "repository": "github:flowr-analysis/badgR",
@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "badgr": "tsx src/cli.ts",
+    "badger": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.web.json",
     "sigdb": "tsx src/cli.ts --sigdb-download",
@@ -45,7 +45,7 @@
     "esbuild@0.28.2": true
   },
   "bin": {
-    "badgr": "dist/cli.js"
+    "badger": "dist/cli.js"
   },
   "files": [
     "dist",

@@ -21,7 +21,7 @@ import { LintingRules } from '@eagleoutice/flowr/linter/linter-rules';
 import type { LintPackage, PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
 import { packagesNamed } from './packages';
 
-declare const BADGR_VERSION: string;
+declare const BADGER_VERSION: string;
 
 interface WebPackage { v?: string, x: string[], c: Record<string, string[]> }
 
@@ -45,7 +45,7 @@ function loadPackage(base: string, name: string): Promise<WebPackage | undefined
 
 let treeSitterReady: Promise<void> | undefined;
 
-/** `SideEffect` as `side-effect`: badgR reads property names without case and dashes */
+/** `SideEffect` as `side-effect`: badger reads property names without case and dashes */
 const kebab = (s: string) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 const flags = (e: Record<string, string | number>) => Object.keys(e).filter(k => typeof e[k] === 'number').map(kebab);
 
@@ -74,8 +74,8 @@ async function run(req: Extract<WorkerRequest, { type: 'analyze' }>): Promise<Re
 	const policy = parsePolicy(req.policyText, req.policyName, req.policyHash);
 	const rFiles = req.files.filter(f => /\.(R|r|Rmd|rmd|qmd)$/.test(f.path));
 	const base = {
-		tool:         'badgR' as const,
-		toolVersion:  BADGR_VERSION,
+		tool:         'badger' as const,
+		toolVersion:  BADGER_VERSION,
 		flowrVersion: String(flowrVersion()),
 		sigdb:        { tag: undefined as string | undefined, present: true, scope: 'package data of this page (base R and CRAN, latest versions)' },
 		policy:       { name: policy.name, hash: policy.hash, source: policy.source, modified: req.policyModified },

@@ -83,7 +83,7 @@ export function untar(data: Uint8Array): { path: string, content: Uint8Array }[]
 
 /** where downloaded packages are kept */
 export function packageCache(): string {
-	return path.resolve(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'badgr', 'packages');
+	return path.resolve(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'badger', 'packages');
 }
 
 /**
@@ -101,7 +101,7 @@ export async function fetchPackage(p: PackageSpec, log: (msg: string) => void = 
 }
 
 /** marks a folder as downloaded completely */
-const Stamp = '.badgr-fetched';
+const Stamp = '.badger-fetched';
 
 /**
  * Downloads a GitHub archive (`.tar.gz`, everything below its top folder) into `dir`, keeping only the R
@@ -124,7 +124,7 @@ export async function fetchTarball(url: string, dir: string, label: string, log:
 /**
  * Writes the R code and package metadata of `files` into `dir`, replacing what was there. The files are
  * written next to the folder and moved in at the end: a download that fails halfway, or a second run of
- * badgr, never leaves or reads a half-written folder. Paths that would leave the folder are refused.
+ * badger, never leaves or reads a half-written folder. Paths that would leave the folder are refused.
  */
 export function writeFolder(files: readonly { path: string, content: Uint8Array | string, from?: string }[], dir: string, label: string, log: (msg: string) => void = () => {}): string {
 	const work = `${dir}.tmp-${process.pid}-${Date.now()}`;

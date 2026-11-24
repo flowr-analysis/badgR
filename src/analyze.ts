@@ -72,7 +72,7 @@ export async function analyze(target: string, policy: Policy, opts: AnalyzeOptio
 	const sig = sigDbStatus();
 	let files: string[] = [];
 	const base = () => ({
-		tool:         'badgR' as const,
+		tool:         'badger' as const,
 		toolVersion:  toolVersion(),
 		flowrVersion: String(flowrVersion()),
 		sigdb:        { tag: sig.tag, present: sig.present, scope: 'full (base R and all of CRAN)' },
@@ -140,7 +140,7 @@ function lintThreads(files: readonly string[], sigDir: string | undefined, limit
 	const script = path.join(__dirname, ts ? 'lint-thread.ts' : 'lint-thread.js');
 	return lintInWorkers(() => {
 		const w = ts
-			/* tsx from badgR's own folder: an eval'd worker resolves modules from the working directory */
+			/* tsx from badger's own folder: an eval'd worker resolves modules from the working directory */
 			? new Worker(`require(${JSON.stringify(require.resolve('tsx/cjs', { paths: [__dirname] }))}); require(${JSON.stringify(script)});`, { eval: true, workerData: { files, sigDir } })
 			: new Worker(script, { workerData: { files, sigDir } });
 		const waiting: ((m: LintMessage) => void)[] = [];

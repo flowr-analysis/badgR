@@ -2,7 +2,7 @@
 
 Open cases from the adversarial rounds, ordered by how wrong the tier is. The full snippets and outputs are in the
 session's hunt reports (`hunt/REPORT.md`, `hunt2/REPORT.md`, `break2/REPORT.md`, `r1-opus/REPORT.md`); the flowR changes
-that would replace badgR's workarounds are planned in `r1-opus/FLOWR-PLAN.md`.
+that would replace badger's workarounds are planned in `r1-opus/FLOWR-PLAN.md`.
 
 ## Tier too good (unsound)
 
@@ -10,7 +10,7 @@ that would replace badgR's workarounds are planned in `r1-opus/FLOWR-PLAN.md`.
   `..N` to the call's arguments (FLOWR-PLAN 1).
 - flowR's signature database does not list the `.Call` inside Rcpp/cpp11 wrappers (`py_run_string_impl`, `vroom_write_`), so a
   package's native code is only seen when the wrapper's caller is in the database (FLOWR-PLAN 2).
-- Code evaluated in data badgR cannot see (`with(readRDS(f), mean(x))`): a name flowR resolves (`mean`) is trusted, though the
+- Code evaluated in data badger cannot see (`with(readRDS(f), mean(x))`): a name flowR resolves (`mean`) is trusted, though the
   data could rebind it; only names flowR resolves to nothing become dynamic calls there.
 - A reactive handed to a lambda of a higher-order helper (`r <- reactive(input$c); system(sapply(list(r), function(f) f()))`,
   also `Reduce(function(a, b) b(), list(r), NULL)`) gets **bronze** (origin `parameter`; deserved none): the lambda's parameter is not

@@ -16,7 +16,7 @@ function rootOf(r: Report): string {
 export function textReport(r: Report): string {
 	const root = rootOf(r);
 	const lines = [
-		`badgR ${r.toolVersion} (flowR ${r.flowrVersion}, sigdb ${r.sigdb.tag ?? '?'}${r.sigdb.present ? '' : ' MISSING'}), policy ${r.policy.name}`,
+		`badger ${r.toolVersion} (flowR ${r.flowrVersion}, sigdb ${r.sigdb.tag ?? '?'}${r.sigdb.present ? '' : ' MISSING'}), policy ${r.policy.name}`,
 		`${r.target}: ${r.tier.tier.toUpperCase()}  (review: ${r.tier.review})`
 	];
 	if(!r.analyzed) {
@@ -60,7 +60,7 @@ function code(text: string): string {
 export function markdownReport(r: Report): string {
 	const root = rootOf(r);
 	const out = [
-		`# badgR: ${cell(r.tier.tier)}`,
+		`# badger: ${cell(r.tier.tier)}`,
 		'',
 		`**${cell(path.basename(r.target))}** reaches the tier **${cell(r.tier.tier)}** of the policy ${code(r.policy.name)}.`,
 		`Human review still needed: ${cell(r.tier.review)}.`,
@@ -90,6 +90,6 @@ export function markdownReport(r: Report): string {
 		}
 		out.push('');
 	}
-	out.push(`<sub>badgR ${r.toolVersion}, flowR ${r.flowrVersion}, signature database ${r.sigdb.tag ?? '?'}, policy hash ${r.policy.hash.slice(0, 12)}, ${r.generatedAt}</sub>`, '');
+	out.push(`<sub>badger ${r.toolVersion}, flowR ${r.flowrVersion}, signature database ${r.sigdb.tag ?? '?'}, policy hash ${r.policy.hash.slice(0, 12)}, ${r.generatedAt}</sub>`, '');
 	return out.join('\n');
 }

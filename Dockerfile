@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# badgR: policy tiers for R scripts, Shiny apps, and projects, checked with flowR.
+# badger: policy tiers for R scripts, Shiny apps, and projects, checked with flowR.
 # The image carries the full flowR signature database (base R and all of CRAN), so it works offline.
 
 FROM node:24-bookworm AS builder
@@ -16,7 +16,7 @@ ENV XDG_CACHE_HOME=/opt/cache
 RUN node dist/cli.js --sigdb-download
 
 FROM node:24-bookworm-slim
-LABEL org.opencontainers.image.title="badgR" \
+LABEL org.opencontainers.image.title="badger" \
       org.opencontainers.image.description="Policy tiers (gold, silver, bronze) for R code, checked with flowR" \
       org.opencontainers.image.licenses="GPL-3.0-or-later"
 WORKDIR /app

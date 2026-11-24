@@ -33,11 +33,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -t badgr .
+      - run: docker build -t badger .
       # works offline: the signature database is in the image
-      - run: docker run --rm --network none -v "$PWD/test/fixtures/bronze:/work/src:ro" badgr --min-tier bronze /work/src
+      - run: docker run --rm --network none -v "$PWD/test/fixtures/bronze:/work/src:ro" badger --min-tier bronze /work/src
 
-  # the image on Docker Hub once the tests pass: main is eagleoutice/badgr:latest, a tag v1.2.3 is :1.2.3
+  # the image on Docker Hub once the tests pass: main is eagleoutice/badger:latest, a tag v1.2.3 is :1.2.3
   docker-publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [test, docker]
@@ -48,8 +48,8 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -t badgr .
-      - run: docker run --rm --network none -v "$PWD/test/fixtures/bronze:/work/src:ro" badgr --min-tier bronze /work/src
+      - run: docker build -t badger .
+      - run: docker run --rm --network none -v "$PWD/test/fixtures/bronze:/work/src:ro" badger --min-tier bronze /work/src
       # like flowR's release, with docker login; one secret, an access token of the Docker Hub user eagleoutice
       - name: push
         env:
@@ -65,8 +65,8 @@ jobs:
           else
             TAG=latest
           fi
-          docker tag badgr "eagleoutice/badgr:$TAG"
-          docker push "eagleoutice/badgr:$TAG"
+          docker tag badger "eagleoutice/badger:$TAG"
+          docker push "eagleoutice/badger:$TAG"
 
   # the playground, built from main with the package data of all of CRAN
   pages-build:

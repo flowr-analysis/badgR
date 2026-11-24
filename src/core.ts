@@ -1,5 +1,5 @@
 /**
- * The analysis badgR runs, independent of where it runs: the command line hands it an analyzer over files
+ * The analysis badger runs, independent of where it runs: the command line hands it an analyzer over files
  * on disk with the full signature database, the web page one over files in memory with the package data
  * it loaded. Nothing in here touches the file system or the network.
  */
@@ -25,7 +25,7 @@ export const BaseRPackages: ReadonlySet<string> = new Set([
 	'compiler', 'grid', 'splines', 'stats4', 'tcltk'
 ]);
 
-/** the R files badgR analyzes, `.Rprofile` (run at startup) included */
+/** the R files badger analyzes, `.Rprofile` (run at startup) included */
 export const RFilePattern = /(\.(R|r|Rmd|rmd|qmd)|(^|\/)\.Rprofile)$/;
 
 /** the files of a package or project flowR reads besides the code: what it imports, exports, and is */
@@ -104,11 +104,11 @@ export function acrossPackages(direct: CalleesOf, trusted: (call: string) => boo
 }
 
 export interface Report {
-	readonly tool:          'badgR'
+	readonly tool:          'badger'
 	readonly toolVersion:   string
 	readonly flowrVersion:  string
 	readonly sigdb:         { readonly tag?: string, readonly present: boolean, readonly scope?: string }
-	/** `modified`: the policy is not badgR's default policy, so the tier means what that policy says */
+	/** `modified`: the policy is not badger's default policy, so the tier means what that policy says */
 	readonly policy:        { readonly name: string, readonly hash: string, readonly source: string, readonly modified?: boolean }
 	readonly target:        string
 	readonly files:         readonly string[]
@@ -118,9 +118,9 @@ export interface Report {
 	readonly tier:          TierResult
 	readonly findings:      readonly Finding[]
 	readonly lint:          readonly LintSummary[]
-	/** calls into packages the signature data did not know, so badgR could not look inside them */
+	/** calls into packages the signature data did not know, so badger could not look inside them */
 	readonly unresolvedPackages: readonly string[]
-	/** what badgR asked flowR, in order: the request as flowR takes it, how long it took, and how much came back */
+	/** what badger asked flowR, in order: the request as flowR takes it, how long it took, and how much came back */
 	readonly queries?:           readonly FlowrQueryRecord[]
 	/** set only on a report shown while the analysis still runs: the linting rules not done yet, in the order they run (the first is running); until they are done, the tier is provisional */
 	readonly pending?:           readonly string[]
@@ -237,7 +237,7 @@ export interface CoreResult {
 	readonly queries:            FlowrQueryRecord[]
 }
 
-/** one step badgR asked flowR for */
+/** one step badger asked flowR for */
 export interface FlowrQueryRecord {
 	/** the query type (`input-sources`, `linter`), or `dataflow` and `signature-database` for the steps that are no query */
 	readonly type:    string
@@ -485,7 +485,7 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 	};
 	/*
 	 * code evaluated in data: `with(data, expr)`, `within(data, expr)`, `eval(expr, envir)`. A call in `expr` whose name the
-	 * data defines calls what the data holds (`with(list(f = system), f(x))`); when badgR cannot tell the data's names,
+	 * data defines calls what the data holds (`with(list(f = system), f(x))`); when badger cannot tell the data's names,
 	 * a call flowR resolved to nothing could be any of them
 	 */
 	interface Mask { readonly names: ReadonlyMap<string, NodeId | undefined> | 'any', readonly data: NodeId }

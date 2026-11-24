@@ -1,4 +1,4 @@
-/** The badgR playground: input on the left, report on the right. Nothing here sends data anywhere. */
+/** The badger playground: input on the left, report on the right. Nothing here sends data anywhere. */
 import type { EditorView } from '@codemirror/view';
 import { type BadgeMarks, badgeSvg, badgeTitle, yamlShape } from '../src/badge';
 import { findingAt, lintAt, parseAt, sarifLog } from '../src/sarif';
@@ -18,9 +18,9 @@ import { applicableFixes, applyFixes, unifiedDiff } from './patch';
 import { policyEditor, rEditor, setText } from './editors';
 import { renderVisual } from './policy-visual';
 
-declare const BADGR_VERSION: string;
+declare const BADGER_VERSION: string;
 declare const FLOWR_VERSION: string;
-declare const BADGR_LIVE: boolean;
+declare const BADGER_LIVE: boolean;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => {
@@ -84,12 +84,12 @@ function showVersions(): void {
 	f.querySelector('.v')!.textContent = FLOWR_VERSION;
 	f.href = `https://github.com/flowr-analysis/flowr/releases/tag/v${FLOWR_VERSION}`;
 	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
-	$('v-badgr').querySelector('.v')!.textContent = BADGR_VERSION;
+	$('v-badger').querySelector('.v')!.textContent = BADGER_VERSION;
 	$('footer-note').replaceChildren(link('https://github.com/flowr-analysis/badgR', 'source'),
 		' · the latest version of each CRAN package (the command line has every version) · GPL-3.0');
 }
 showVersions();
-if(BADGR_LIVE) {
+if(BADGER_LIVE) {
 	/* `npm run web:dev`: reload when a rebuild lands */
 	new EventSource('/__live').onmessage = () => location.reload();
 }
@@ -98,6 +98,17 @@ async function sha256(text: string): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
 	return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
+
+/* the page was called badgR: what it kept in this browser moves over to the new keys once */
+try {
+	for(const old of Object.keys(localStorage).filter(k => k.startsWith('badgr.'))) {
+		const key = `badger.${old.slice('badgr.'.length)}`;
+		if(localStorage.getItem(key) === null) {
+			localStorage.setItem(key, localStorage.getItem(old) ?? '');
+		}
+		localStorage.removeItem(old);
+	}
+} catch{ /* no storage: nothing to move */ }
 
 /* ---------------------------------------------------------------- light, dark, or as the system */
 
@@ -115,7 +126,7 @@ function applyTheme(t: Theme): void {
 }
 let theme: Theme = (() => {
 	try {
-		const t = localStorage.getItem('badgr.theme');
+		const t = localStorage.getItem('badger.theme');
 		return Themes.includes(t as Theme) ? t as Theme : 'auto';
 	} catch{
 		return 'auto';
@@ -126,7 +137,7 @@ $('theme').addEventListener('click', () => {
 	theme = Themes[(Themes.indexOf(theme) + 1) % Themes.length];
 	applyTheme(theme);
 	try {
-		localStorage.setItem('badgr.theme', theme);
+		localStorage.setItem('badger.theme', theme);
 	} catch{ /* private mode: the theme lasts as long as the page */ }
 });
 
@@ -227,7 +238,7 @@ function isDefault(text: string): boolean {
 	return yamlShape(text) === defaultShape;
 }
 
-const PolicyKey = 'badgr.policy';
+const PolicyKey = 'badger.policy';
 const stored = (() => {
 	try {
 		return localStorage.getItem(PolicyKey) ?? undefined;
@@ -525,7 +536,7 @@ function showError(msg: string): void {
 	/* a link that shows only an export shows the error in its place */
 	const raw = document.getElementById('raw');
 	if(raw !== null && raw.dataset.state === 'running') {
-		raw.textContent = `badgR could not make this export: ${msg}`;
+		raw.textContent = `badger could not make this export: ${msg}`;
 		raw.dataset.state = 'error';
 	}
 }
@@ -932,7 +943,7 @@ function setLive(on: boolean): void {
 }
 /* live is the default; turning it off is kept in this browser */
 try {
-	setLive(localStorage.getItem('badgr.live') !== 'off');
+	setLive(localStorage.getItem('badger.live') !== 'off');
 } catch{ /* no storage: the default */ }
 const live = { get checked(): boolean {
 	return liveButton.getAttribute('aria-pressed') === 'true';
@@ -1012,9 +1023,9 @@ liveButton.addEventListener('click', () => {
 	setLive(!live.checked);
 	try {
 		if(live.checked) {
-			localStorage.removeItem('badgr.live');
+			localStorage.removeItem('badger.live');
 		} else {
-			localStorage.setItem('badgr.live', 'off');
+			localStorage.setItem('badger.live', 'off');
 		}
 	} catch{ /* no storage: only for this visit */ }
 	if(live.checked) {
@@ -1174,7 +1185,7 @@ const ow = (o: string) => OriginWords[o] ?? o;
 /**
  * What a finding does, from what flowR states: the capability the policy matched (its name in the policy),
  * flowR's semantic tags of the function, and the value sources of the input-sources query. No prose of
- * badgR's own about what a function does.
+ * badger's own about what a function does.
  */
 function describe(f: Finding): string {
 	const tags = f.tags && f.tags.length > 0 ? ` (flowR: ${f.tags.join(', ')})` : '';
@@ -1185,7 +1196,7 @@ function describe(f: Finding): string {
 		: `has the capability ${f.capability}${tags}, with ${values}`;
 }
 
-/* the flowR documentation of what badgR asks flowR */
+/* the flowR documentation of what badger asks flowR */
 const Wiki = 'https://github.com/flowr-analysis/flowr/wiki/';
 const Docs = {
 	queryApi:      `${Wiki}Query-API`,
@@ -1209,9 +1220,9 @@ function tagLink(cls: string, text: string, href: string, title: string): HTMLAn
 /*
  * A reviewer can mark a finding as tolerated, a false positive, or to fix, with a note. This never changes
  * the tier. The decisions stay in this browser, travel in shared links, and export as review.json, which
- * `badgr --review review.json` reads as well.
+ * `badger --review review.json` reads as well.
  */
-const ReviewKey = 'badgr.review';
+const ReviewKey = 'badger.review';
 const reviews = new Map<string, ReviewEntry>((() => {
 	try {
 		return parseReview(localStorage.getItem(ReviewKey) ?? '[]').map(e => [e.key, e] as const);
@@ -1344,7 +1355,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	const svg = badgeSvg(r.tier.tier, r.tier.color, marks);
 	const img = el('img');
 	img.alt = badgeTitle(r.tier.tier, marks);
-	img.title = [badgeTitle(r.tier.tier, marks), marks.custom ? 'The * says the tier is that of a custom policy, not of badgR\'s default.' : '',
+	img.title = [badgeTitle(r.tier.tier, marks), marks.custom ? 'The * says the tier is that of a custom policy, not of badger\'s default.' : '',
 		marks.reviewed ? 'The check mark says every finding is reviewed and none is left to fix.' : ''].filter(Boolean).join('. ');
 	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 	$('badge').replaceChildren(img);
@@ -1471,7 +1482,7 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		return item;
 	})));
 	$('all-results').hidden = all.childElementCount === 0;
-	/* what badgR asked flowR, each linked to its documentation */
+	/* what badger asked flowR, each linked to its documentation */
 	const meta = $('verdict-meta');
 	meta.replaceChildren(`${plural(r.files.length, 'R file')} · ${pending.length > 0 ? 'still running' : duration(r.ms)} · flowR ${r.flowrVersion} · uses flowR's `,
 		link(Docs.dataflow, 'dataflow graph'), ', ', link(Docs.functionInfo, 'function-info'), ', ', link(Docs.inputSources, 'input-sources'), ', and ',
@@ -1700,7 +1711,7 @@ function sigdbSection(fn: string, candidates: readonly string[]): HTMLElement {
 				const reach = data.c[fn] ?? [];
 				const body = el('p');
 				body.append(reach.length > 0
-					? `Inside its package it reaches ${listing(reach.map(x => `${x}`))}, which badgR checks for capabilities.`
+					? `Inside its package it reaches ${listing(reach.map(x => `${x}`))}, which badger checks for capabilities.`
 					: 'Inside its package it reaches no function that could have a capability of the policy.');
 				const links = el('p', 'pop-links');
 				const docs = docsOf(`${pkg}::${fn}`);
@@ -2051,7 +2062,7 @@ function allFixes(r: Report): { patch: string, count: number, files: number } {
 	return { patch, count, files: byFile.size };
 }
 
-/** the flowR page of each step badgR runs */
+/** the flowR page of each step badger runs */
 const QueryDocs: Record<string, string> = {
 	'dataflow':           Docs.dataflow,
 	'input-sources':      Docs.inputSources,
@@ -2225,7 +2236,7 @@ function renderLint(r: Report, incremental = false): void {
 	}
 	/* which query runs, and which tiers need which rule */
 	const intro = el('p', 'lint-intro hint');
-	intro.append('badgR runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '. A rule a tier needs must report nothing for that tier; the other rules are advice and do not change the tier.');
+	intro.append('badger runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '. A rule a tier needs must report nothing for that tier; the other rules are advice and do not change the tier.');
 	const neededFor = (rule: string) => {
 		const tiers = (policy?.tiers ?? []).filter(t => t.lint.includes(rule)).map(t => t.name);
 		return tiers.length > 0 ? [el('span', 'hint needed', `needed for ${listing(tiers)}`)] : [];
@@ -2305,7 +2316,7 @@ function drawTierTable(): void {
 		const sum = el('summary');
 		const img = el('img');
 		img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(t.name, t.color))}`;
-		img.alt = `badgR: ${t.name}`;
+		img.alt = `badger: ${t.name}`;
 		sum.append(img, el('span', '', t.summary ?? t.description ?? `No finding of ${listing(t.forbid.map(f => f.reason ?? 'a forbidden kind'))}.`));
 		d.append(sum);
 		const body = el('div', 'tier-body');
@@ -2345,18 +2356,18 @@ function drawTierTable(): void {
 	const top = p.tiers[1]?.name ?? p.tiers[0]?.name ?? 'silver';
 	$('snippet').textContent = [
 		'# the Docker image has flowR and its signature database inside and needs no network',
-		'docker pull eagleoutice/badgr',
-		'docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" eagleoutice/badgr \\',
+		'docker pull eagleoutice/badger',
+		'docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" eagleoutice/badger \\',
 		'  --badge /work/badge.svg --md /work/report.md /work/app',
 		'',
 		`# in CI: fail below ${top} (exit code 2)`,
-		`docker run --rm -v "$PWD:/work/src:ro" eagleoutice/badgr --min-tier ${top} /work/src`,
+		`docker run --rm -v "$PWD:/work/src:ro" eagleoutice/badger --min-tier ${top} /work/src`,
 		'',
 		'# or with Node.js, from a clone of the repository',
-		'npm run badgr -- app/ --badge badge.svg',
+		'npm run badger -- app/ --badge badge.svg',
 		'',
 		'# in the README',
-		'![badgR](badge.svg)'
+		'![badger](badge.svg)'
 	].join('\n');
 }
 drawTierTable();
@@ -2488,7 +2499,7 @@ function showShared(tier: string | undefined, n: string | null, note: string, ac
 	}
 	const box = $('shared');
 	const img = el('img');
-	img.alt = `badgR: ${tier}`;
+	img.alt = `badger: ${tier}`;
 	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(tier, t.color))}`;
 	const p = el('p');
 	p.append(`This link was shared with tier ${tier}${n !== null ? ` and ${plural(Number(n), 'finding')}` : ''}. ${note}`);

@@ -1,8 +1,8 @@
-<img src="assets/badgr-logo.svg" width="90" align="right" alt="">
+<img src="assets/badger-logo.svg" width="90" align="right" alt="">
 
-# badgR
+# badger
 
-badgR gives R scripts, Shiny apps, and R projects a security tier: gold, silver, bronze, or none.
+badger gives R scripts, Shiny apps, and R projects a security tier: gold, silver, bronze, or none.
 It uses [flowR](https://github.com/flowr-analysis/flowr) to find risky calls (running code or
 commands, files, the network) and where their values come from.
 
@@ -27,7 +27,7 @@ Findings carry flowR's file role: `source`, `test`, `vignette`, `install` (`inst
 a forbid rule can name other roles with `files:`. `allow` lists calls (regular expressions on
 `pkg::fn`) that never become findings; the default policy allows none.
 
-badgR reads scripts, Shiny apps, and R packages: a package's `DESCRIPTION` and `NAMESPACE`, its
+badger reads scripts, Shiny apps, and R packages: a package's `DESCRIPTION` and `NAMESPACE`, its
 `.Rprofile` (role `startup`), and its built vignettes in `inst/doc` (role `vignette`). A call into a
 package is followed into the packages it calls in turn (as far as flowR's signature database knows them),
 so `readr::write_csv` counts what `vroom` does.
@@ -47,34 +47,35 @@ makes the page download that file once the analysis is done.
 ```sh
 npm ci
 npm run sigdb                                   # once, downloads flowR's signature database
-npm run badgr -- app/                           # a folder or an .R, .Rmd, or .qmd file
-npm run badgr -- app/ --json report.json --md report.md --badge badge.svg
-npm run badgr -- app/ --sarif badgr.sarif               # SARIF 2.1.0 for code scanning
-npm run badgr -- glue@1.8.0                     # a CRAN package (or cran:glue, bioc:limma), from its GitHub mirror
-npm run badgr -- https://github.com/owner/repo/tree/main/app   # a url, read as the playground reads it
-npm run badgr -- app/ --min-tier silver         # exit code 2 below silver
-npm run badgr -- app/ --review review.json      # reviewer decisions from the playground
+npm run badger -- app/                           # a folder or an .R, .Rmd, or .qmd file
+npm run badger -- app/ --json report.json --md report.md --badge badge.svg
+npm run badger -- app/ --sarif badger.sarif               # SARIF 2.1.0 for code scanning
+npm run badger -- glue@1.8.0                     # a CRAN package (or cran:glue, bioc:limma), from its GitHub mirror
+npm run badger -- https://github.com/owner/repo/tree/main/app   # a url, read as the playground reads it
+npm run badger -- app/ --min-tier silver         # exit code 2 below silver
+npm run badger -- app/ --review review.json      # reviewer decisions from the playground
 ```
 
-With Docker: the image [`eagleoutice/badgr`](https://hub.docker.com/r/eagleoutice/badgr) carries flowR and its
-signature database and needs no network, except to download a package or a url.
+With Docker: the image [`eagleoutice/badger`](https://hub.docker.com/r/eagleoutice/badger) carries flowR and its
+signature database and needs no network, except to download a package or a url. badger was called badgR before; its old image
+[`eagleoutice/badgr`](https://hub.docker.com/r/eagleoutice/badgr) no longer gets updates.
 
 ```sh
-docker run --rm -v "$PWD/app:/work/src:ro" eagleoutice/badgr --min-tier silver /work/src
-./badgr app/ --badge badge.svg                  # the same through the wrapper; output in ./badgr-out
-./badgr https://github.com/owner/repo           # a url or a package, downloaded inside the container
-docker build -t badgr . && BADGR_IMAGE=badgr ./badgr app/      # an image built from this repository
+docker run --rm -v "$PWD/app:/work/src:ro" eagleoutice/badger --min-tier silver /work/src
+./badger app/ --badge badge.svg                  # the same through the wrapper; output in ./badger-out
+./badger https://github.com/owner/repo           # a url or a package, downloaded inside the container
+docker build -t badger . && BADGER_IMAGE=badger ./badger app/      # an image built from this repository
 ```
 
-SARIF results keep their identity across runs: rule ids are `badgr/<capability>` and
+SARIF results keep their identity across runs: rule ids are `badger/<capability>` and
 `flowr/<linting rule>`, and `partialFingerprints` hash the file, call, capability, and the text of the
 line, not the line number. Findings a review tolerated or marked as false positives carry a suppression
 with the reviewer's note. For GitHub code scanning:
 
 ```yaml
-- run: ./badgr . --sarif badgr.sarif --review review.json
+- run: ./badger . --sarif badger.sarif --review review.json
 - uses: github/codeql-action/upload-sarif@v3
-  with: { sarif_file: badgr.sarif }
+  with: { sarif_file: badger.sarif }
 ```
 
 ## Development
@@ -87,8 +88,8 @@ npm run web:data -- --only shiny,glue           # package data for a few package
 ```
 
 CI runs the tests and the Docker image on every push. On `main` it also builds the playground with the
-package data of all of CRAN and deploys it to GitHub Pages, and pushes the image to Docker Hub: `main` as `eagleoutice/badgr:latest`, a tag `v1.2.3` as
-`eagleoutice/badgr:1.2.3`. That needs one repository secret, `DOCKERHUB_TOKEN`, an access
+package data of all of CRAN and deploys it to GitHub Pages, and pushes the image to Docker Hub: `main` as `eagleoutice/badger:latest`, a tag `v1.2.3` as
+`eagleoutice/badger:1.2.3`. That needs one repository secret, `DOCKERHUB_TOKEN`, an access
 token of the Docker Hub user `eagleoutice`; without it, CI skips the push with a warning.
 
 GPL-3.0-or-later, like flowR.

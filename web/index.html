@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Own files only, plus GitHub or a typed URL on request, and no forms. The nonce admits the editor's styles. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'nonce-badgr'; img-src 'self' data: blob:; connect-src 'self' data: https:; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'nonce-badger'; img-src 'self' data: blob:; connect-src 'self' data: https:; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
-<title>badgR playground</title>
+<title>badger playground</title>
 <meta name="description" content="Policy tiers for R scripts, Shiny apps, and projects, computed with flowR in your browser.">
-<link rel="icon" href="badgr-icon.svg" type="image/svg+xml">
+<link rel="icon" href="badger-icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 <script src="main.js" defer></script>
 </head>
 <body>
 <header class="bar">
-  <a class="brand" href="./"><img src="badgr-icon.svg" alt="" width="30" height="35">badgR</a>
+  <a class="brand" href="./"><img src="badger-icon.svg" alt="" width="30" height="35">badger</a>
   <span class="tagline">security tiers for R code, using flowR's static analysis</span>
 <div class="local" role="note">
   <strong>Runs locally.</strong> Your code is analyzed in this browser and is never uploaded.
@@ -74,7 +74,7 @@
       </label>
       <div class="row">
         <label class="button secondary"><input type="file" id="folder-input" webkitdirectory hidden>Choose a folder</label>
-        <span class="hint">badgR reads .R, .Rmd, .qmd, .Rprofile, DESCRIPTION, and NAMESPACE files and skips renv and .git folders.</span>
+        <span class="hint">badger reads .R, .Rmd, .qmd, .Rprofile, DESCRIPTION, and NAMESPACE files and skips renv and .git folders.</span>
       </div>
     </div>
 
@@ -85,7 +85,7 @@
         <button type="submit" class="button">Fetch</button>
       </form>
       <p class="hint" id="url-note" aria-live="polite"></p>
-      <p class="hint">badgR reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages by name or page (<code>glue</code>, <code>glue@1.8.0</code>, <code>cran:glue</code>, from their GitHub mirror), Bioconductor packages (<code>bioc:limma</code>), and links to the flowR playground or to this page, which carry the code in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow cross-site downloads (CORS).</p>
+      <p class="hint">badger reads repositories, folders, and files on GitHub and GitLab, gists, CRAN packages by name or page (<code>glue</code>, <code>glue@1.8.0</code>, <code>cran:glue</code>, from their GitHub mirror), Bioconductor packages (<code>bioc:limma</code>), and links to the flowR playground or to this page, which carry the code in the link. A plain <code>owner/repo</code> means GitHub. Other servers must allow cross-site downloads (CORS).</p>
     </div>
 
     <div class="panel" data-panel="policy" hidden>
@@ -94,7 +94,7 @@
           <button type="button" data-view="grid" aria-pressed="true">Grid</button>
           <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
         </div>
-        <button class="button secondary small" id="policy-reset" title="go back to badgR's default policy (you can undo this)">Reset to default</button>
+        <button class="button secondary small" id="policy-reset" title="go back to badger's default policy (you can undo this)">Reset to default</button>
         <button class="button secondary small" id="policy-copy" title="a link to this page with this policy; opening it loads the policy">copy policy link</button>
         <span id="policy-status" class="hint"></span>
       </div>
@@ -107,7 +107,7 @@
     <details class="badges-box">
       <summary>The badges <span class="hint">strictest first, from the current policy</span></summary>
       <ol class="tier-list" id="tier-table"></ol>
-      <details class="use"><summary>Use the badge in a README or in CI, with the Docker image <code>eagleoutice/badgr</code></summary><pre class="snippet" id="snippet"></pre></details>
+      <details class="use"><summary>Use the badge in a README or in CI, with the Docker image <code>eagleoutice/badger</code></summary><pre class="snippet" id="snippet"></pre></details>
     </details>
    </div>
   </section>
@@ -172,10 +172,10 @@
 
 <footer id="footer">
   <span class="versions" id="versions">
-    <a class="ver" id="v-flowr" href="https://github.com/flowr-analysis/flowr" title="the static analysis badgR runs"><span class="k">flowR</span><span class="v">…</span></a>
+    <a class="ver" id="v-flowr" href="https://github.com/flowr-analysis/flowr" title="the static analysis badger runs"><span class="k">flowR</span><span class="v">…</span></a>
     <a class="ver" id="v-sigdb" href="https://github.com/flowr-analysis/flowr/wiki/Signature-Database" title="flowR's signature database: exports and call graphs of base R and CRAN"><span class="k">sigdb</span><span class="v">…</span></a>
-    <a class="ver" id="v-docker" href="https://hub.docker.com/r/eagleoutice/badgr" title="badgR as a Docker image, with flowR's signature database inside, for CI and offline use: docker run eagleoutice/badgr"><span class="k">docker</span><span class="v">eagleoutice/badgr</span></a>
-    <a class="ver" id="v-badgr" href="https://github.com/flowr-analysis/badgR/releases" title="badgR releases and changes"><span class="k">badgR</span><span class="v">…</span></a>
+    <a class="ver" id="v-docker" href="https://hub.docker.com/r/eagleoutice/badger" title="badger as a Docker image, with flowR's signature database inside, for CI and offline use: docker run eagleoutice/badger (formerly eagleoutice/badgr)"><span class="k">docker</span><span class="v">eagleoutice/badger</span></a>
+    <a class="ver" id="v-badger" href="https://github.com/flowr-analysis/badgR/releases" title="badger releases and changes"><span class="k">badger</span><span class="v">…</span></a>
   </span>
   <span id="footer-note"></span>
 </footer>

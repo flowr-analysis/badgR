@@ -31,15 +31,15 @@ describe('the command line', () => {
 	test('--md - writes only the Markdown report to stdout, with the rule pages linked', () => {
 		const r = cli('--md', '-', '--quiet', path.join(root, 'test', 'fixtures', 'bronze'));
 		expect(r.status).toBe(0);
-		expect(r.stdout.startsWith('# badgR')).toBe(true);
+		expect(r.stdout.startsWith('# badger')).toBe(true);
 		expect(r.stdout).toContain('https://github.com/flowr-analysis/flowr/wiki/');
 		expect(r.stdout).not.toContain('✗ gold');
 	}, 300_000);
 
 	test('--review marks a finding as reviewed and leaves the tier alone', () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-review-'));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-review-'));
 		const review = path.join(dir, 'review.json');
-		fs.writeFileSync(review, JSON.stringify({ badgrReview: 1, entries: [
+		fs.writeFileSync(review, JSON.stringify({ badgerReview: 1, entries: [
 			{ key: 'app.R|glue::glue|code-execution|package|output$t <- renderText(glue(input$template))', state: 'tolerated', note: 'a fixed template' }
 		] }));
 		const r = cli('--json', '--quiet', '--review', review, path.join(root, 'test', 'fixtures', 'bronze'));
@@ -62,9 +62,9 @@ describe('the command line', () => {
 	}, 120_000);
 
 	test('--sarif writes SARIF with stable fingerprints, and the badge marks a complete review and a custom policy', () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-sarif-'));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-sarif-'));
 		const review = path.join(dir, 'review.json');
-		fs.writeFileSync(review, JSON.stringify({ badgrReview: 1, entries: [
+		fs.writeFileSync(review, JSON.stringify({ badgerReview: 1, entries: [
 			{ key: 'app.R|glue::glue|code-execution|package|output$t <- renderText(glue(input$template))', state: 'false-positive', note: 'a fixed template' }
 		] }));
 		const target = path.join(root, 'test', 'fixtures', 'bronze');
@@ -72,16 +72,16 @@ describe('the command line', () => {
 		expect(r.status).toBe(0);
 		const sarif = JSON.parse(fs.readFileSync(path.join(dir, 'out.sarif'), 'utf-8')) as { version: string, runs: { results: Record<string, unknown>[], properties: Record<string, unknown> }[] };
 		expect(sarif.version).toBe('2.1.0');
-		const [result] = sarif.runs[0].results.filter(x => x.ruleId === 'badgr/code-execution');
+		const [result] = sarif.runs[0].results.filter(x => x.ruleId === 'badger/code-execution');
 		expect(result).toEqual(expect.objectContaining({
 			level:               'error',
 			locations:           [{ physicalLocation: { artifactLocation: { uri: 'app.R', uriBaseId: 'SRCROOT' }, region: expect.objectContaining({ startLine: expect.any(Number) }) } }],
-			partialFingerprints: { 'badgrFinding/v1': expect.stringMatching(/^[0-9a-f]{16}$/) },
+			partialFingerprints: { 'badgerFinding/v1': expect.stringMatching(/^[0-9a-f]{16}$/) },
 			suppressions:        [{ kind: 'external', status: 'accepted', justification: 'a fixed template' }]
 		}));
 		expect(sarif.runs[0].properties).toEqual(expect.objectContaining({ tier: 'bronze', reviewed: { total: 1, decided: 1, toFix: 0, complete: true } }));
 		const badge = fs.readFileSync(path.join(dir, 'badge.svg'), 'utf-8');
-		expect(badge).toContain('aria-label="badgR: bronze, all findings reviewed"');
+		expect(badge).toContain('aria-label="badger: bronze, all findings reviewed"');
 		expect(badge).not.toContain('bronze*');
 
 		/* the same policy under another name is still the default; a changed one is custom */
@@ -119,7 +119,7 @@ describe('the command line, arguments', () => {
 	});
 
 	test('the default policy with other layout and key order is not custom, a changed one is', () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-marks-'));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-marks-'));
 		const text = fs.readFileSync(path.join(root, 'policies', 'default.yaml'), 'utf-8');
 		const reordered = path.join(dir, 'reordered.yaml');
 		/* same content, other layout: a comment, and the document as JSON with its keys reversed */

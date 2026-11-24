@@ -56,7 +56,7 @@ describe('what the page reads', () => {
 			expect(kind('https://cran.r-project.org/web/packages/shiny/index.html')).toBe('cran');
 			expect(kind('https://someone.shinyapps.io/app/')).toBe('shiny-deployment');
 			expect(kind(Playground.link({ code: 'x <- 1' }))).toBe('playground');
-			expect(kind('https://example.org/badgr/#z=abc&tier=gold')).toBe('own');
+			expect(kind('https://example.org/badger/#z=abc&tier=gold')).toBe('own');
 			expect(kind('https://example.org/script.R')).toBe('file');
 		});
 
@@ -102,11 +102,11 @@ describe('what the page reads', () => {
 			expect(describeUrl('glue@1.8.0')?.note).toContain('glue 1.8.0');
 			expect(kind('bioc:limma')).toBe('bioc');
 			expect(kind('https://bioconductor.org/packages/release/bioc/html/limma.html')).toBe('bioc');
-			expect(kind(`https://example.org/badgr/#url=${encodeURIComponent('https://github.com/o/r')}&tier=gold`)).toBe('github');
+			expect(kind(`https://example.org/badger/#url=${encodeURIComponent('https://github.com/o/r')}&tier=gold`)).toBe('github');
 			expect(kind('example.org')).toBe('file');
 		});
 
-		test('fetches a CRAN package, at a version, from its GitHub mirror, and a badgR link from where it points', async() => {
+		test('fetches a CRAN package, at a version, from its GitHub mirror, and a badger link from where it points', async() => {
 			const asked: string[] = [];
 			const real = globalThis.fetch;
 			globalThis.fetch = (async(input: string | URL | Request) => {
@@ -126,7 +126,7 @@ describe('what the page reads', () => {
 				expect(asked).toContain('https://api.github.com/repos/cran/glue/git/trees/1.6.2?recursive=1');
 				expect(asked.some(u => u.startsWith('https://raw.githubusercontent.com/cran/glue/1.6.2/'))).toBe(true);
 				asked.length = 0;
-				await fromUrl(`https://example.org/badgr/#url=${encodeURIComponent('cran:glue')}&tier=gold`);
+				await fromUrl(`https://example.org/badger/#url=${encodeURIComponent('cran:glue')}&tier=gold`);
 				expect(asked[0]).toBe('https://api.github.com/repos/cran/glue');
 				expect(asked).toContain('https://api.github.com/repos/cran/glue/git/trees/master?recursive=1');
 			} finally {
@@ -134,15 +134,15 @@ describe('what the page reads', () => {
 			}
 		});
 
-		test('a badgR link to a badgR or playground link reads the inner code; a link of links ends', async() => {
+		test('a badger link to a badger or playground link reads the inner code; a link of links ends', async() => {
 			const code = Buffer.from(deflateSync(strToU8('system(readline())'))).toString('base64url');
-			const inner = `https://x.org/badgr/#z=${code}`;
-			expect(await fromUrl(`https://x.org/badgr/#url=${encodeURIComponent(inner)}`)).toEqual([{ path: 'script.R', content: 'system(readline())' }]);
+			const inner = `https://x.org/badger/#z=${code}`;
+			expect(await fromUrl(`https://x.org/badger/#url=${encodeURIComponent(inner)}`)).toEqual([{ path: 'script.R', content: 'system(readline())' }]);
 			const pg = Playground.link({ code: 'eval(1)', name: 'a.R' });
-			expect(await fromUrl(`https://x.org/badgr/#url=${encodeURIComponent(pg)}`)).toEqual([{ path: 'a.R', content: 'eval(1)' }]);
+			expect(await fromUrl(`https://x.org/badger/#url=${encodeURIComponent(pg)}`)).toEqual([{ path: 'a.R', content: 'eval(1)' }]);
 			let deep = inner;
 			for(let i = 0; i < 7; i++) {
-				deep = `https://x.org/badgr/#url=${encodeURIComponent(deep)}`;
+				deep = `https://x.org/badger/#url=${encodeURIComponent(deep)}`;
 			}
 			await expect(fromUrl(deep)).rejects.toThrow(/link to a link/);
 		});

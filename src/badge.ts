@@ -7,7 +7,7 @@ const Hex = 'M32 2 L62 19.5 L62 54.5 L32 72 L2 54.5 L2 19.5 Z';
  * stripes from the upper corners down to the snout, the eyes inside them, and the nose at the lower corner.
  * Drawn on a 64 x 74 grid and scaled to `height`, with ids of its own so several can share a page.
  */
-export function badgerMark(x: number, y: number, height: number, id = 'badgr', outline = 3.5, fur = '#f4f1ea'): string {
+export function badgerMark(x: number, y: number, height: number, id = 'badger', outline = 3.5, fur = '#f4f1ea'): string {
 	const s = height / 74;
 	return `<g transform="translate(${x} ${y}) scale(${s})">
     <clipPath id="${id}-hex"><path d="${Hex}"/></clipPath>
@@ -25,10 +25,10 @@ export function badgerMark(x: number, y: number, height: number, id = 'badgr', o
 /** the logo; `named` adds the name below, as on a package sticker */
 export function logoSvg(size = 128, named = true): string {
 	const h = Math.round(size * (named ? 92 : 74) / 64);
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${h}" viewBox="0 0 64 ${named ? 92 : 74}" role="img" aria-label="badgR">
-  <title>badgR</title>
-  ${badgerMark(0, 0, 74, 'badgr-logo')}
-  ${named ? '<text x="32" y="88" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#1d1c1a">badgR</text>' : ''}
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${h}" viewBox="0 0 64 ${named ? 92 : 74}" role="img" aria-label="badger">
+  <title>badger</title>
+  ${badgerMark(0, 0, 74, 'badger-logo')}
+  ${named ? '<text x="32" y="88" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#1d1c1a">badger</text>' : ''}
 </svg>
 `;
 }
@@ -49,9 +49,9 @@ function textWidth(s: string): number {
 
 /** what a badge says besides the tier */
 export interface BadgeMarks {
-	/** the left text, `badgR` by default */
+	/** the left text, `badger` by default */
 	readonly label?:    string
-	/** checked against another policy than badgR's default: the tier gets a `*` */
+	/** checked against another policy than badger's default: the tier gets a `*` */
 	readonly custom?:   boolean
 	/** every finding was reviewed and none is left to fix: the tier gets a check mark */
 	readonly reviewed?: boolean
@@ -59,15 +59,15 @@ export interface BadgeMarks {
 
 /** what the marks of a badge mean, for its title and for screen readers */
 export function badgeTitle(tier: string, marks: BadgeMarks = {}): string {
-	return [`${marks.label ?? 'badgR'}: ${tier}`, marks.custom ? 'custom policy' : undefined, marks.reviewed ? 'all findings reviewed' : undefined].filter(Boolean).join(', ');
+	return [`${marks.label ?? 'badger'}: ${tier}`, marks.custom ? 'custom policy' : undefined, marks.reviewed ? 'all findings reviewed' : undefined].filter(Boolean).join(', ');
 }
 
 /**
- * A shields.io style badge: the badger and `badgR` on the left, the tier in its color on the right; a
+ * A shields.io style badge: the badger and `badger` on the left, the tier in its color on the right; a
  * custom policy adds `*` to the tier, a complete review a check mark.
  */
 export function badgeSvg(tier: string, color: string, marks: BadgeMarks = {}): string {
-	const label = marks.label ?? 'badgR';
+	const label = marks.label ?? 'badger';
 	const shown = `${tier}${marks.custom ? '*' : ''}`;
 	const icon = 15;
 	const check = marks.reviewed ? 12 : 0;
@@ -78,7 +78,7 @@ export function badgeSvg(tier: string, color: string, marks: BadgeMarks = {}): s
 	const l = escapeXml(label);
 	const title = escapeXml(badgeTitle(tier, marks));
 	/* ids of their own, so several badges can share one page */
-	const id = `badgr-${tier.replace(/[^\w-]/g, '')}${marks.custom ? '-c' : ''}${marks.reviewed ? '-r' : ''}`;
+	const id = `badger-${tier.replace(/[^\w-]/g, '')}${marks.custom ? '-c' : ''}${marks.reviewed ? '-r' : ''}`;
 	const tx = lw + 8 + textWidth(shown) / 2;
 	/* the check mark is drawn, not a glyph, so it looks the same in every font */
 	const mark = marks.reviewed

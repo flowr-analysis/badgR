@@ -12,7 +12,7 @@ const finding: Finding = {
 
 function report(findings: Finding[]): Report {
 	return {
-		tool: 'badgR', toolVersion: '0.1.0', flowrVersion: '2.17.8', sigdb: { present: true, tag: 'v1' },
+		tool: 'badger', toolVersion: '0.1.0', flowrVersion: '2.17.8', sigdb: { present: true, tag: 'v1' },
 		policy: { name: 'p', hash: 'h', source: 'p.yaml', modified: false }, target: '/p', files: ['/p/app.R'],
 		generatedAt: '2026-01-01T00:00:00.000Z', analyzed: true,
 		tier: { tier: 'none', color: '#6b6b6b', review: 'full', checks: [{ tier: 'gold', met: false, violations: [{ rule: 'gold.forbid[0]', reason: 'r', findings: ['7'] }] }] },
@@ -27,9 +27,9 @@ describe('SARIF', () => {
 	test('a finding and a linting result, with location, fix, and the tiers the finding blocks', () => {
 		const log = sarifLog([report([finding])], opts(['', '', 'system(readline())'])) as { runs: { results: Record<string, unknown>[], tool: { driver: { rules: { id: string }[] } } }[] };
 		const [run] = log.runs;
-		expect(run.tool.driver.rules.map(r => r.id)).toEqual(['badgr/shell', 'flowr/unescaped-arguments']);
+		expect(run.tool.driver.rules.map(r => r.id)).toEqual(['badger/shell', 'flowr/unescaped-arguments']);
 		expect(run.results[0]).toEqual(expect.objectContaining({
-			ruleId: 'badgr/shell', ruleIndex: 0, level: 'error',
+			ruleId: 'badger/shell', ruleIndex: 0, level: 'error',
 			locations: [{ physicalLocation: { artifactLocation: { uri: 'app.R', uriBaseId: 'SRCROOT' }, region: { startLine: 3, startColumn: 1, endLine: 3, endColumn: 18 } } }],
 			properties: expect.objectContaining({ blocks: ['gold'], origins: ['outside'] })
 		}));
@@ -41,7 +41,7 @@ describe('SARIF', () => {
 	});
 
 	test('a fingerprint survives the code moving to another line, and changes with the call', () => {
-		const fp = (f: Finding, lines: string[]) => ((sarifLog([report([f])], opts(lines)) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgrFinding/v1']);
+		const fp = (f: Finding, lines: string[]) => ((sarifLog([report([f])], opts(lines)) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgerFinding/v1']);
 		const here = fp(finding, ['', '', 'system(readline())']);
 		expect(fp({ ...finding, loc: [9, 1, 9, 17] }, Array(8).fill('# moved').concat('  system(readline())'))).toBe(here);
 		expect(fp(finding, ['', '', 'system(other())'])).not.toBe(here);
@@ -79,14 +79,14 @@ describe('badge marks', () => {
 	test('a custom policy adds *, a complete review a check mark, both say so to screen readers', () => {
 		const plain = badgeSvg('gold', '#d4aa32');
 		const both = badgeSvg('gold', '#d4aa32', { custom: true, reviewed: true });
-		expect(plain).toContain('aria-label="badgR: gold"');
+		expect(plain).toContain('aria-label="badger: gold"');
 		expect(both).toContain('>gold*<');
 		expect(both).toContain(`aria-label="${badgeTitle('gold', { custom: true, reviewed: true })}"`);
-		expect(badgeTitle('gold', { custom: true, reviewed: true })).toBe('badgR: gold, custom policy, all findings reviewed');
+		expect(badgeTitle('gold', { custom: true, reviewed: true })).toBe('badger: gold, custom policy, all findings reviewed');
 		/* wider for the marks, and ids of their own so marked and plain badges can share a page */
 		const width = (svg: string) => Number(/width="(\d+(\.\d+)?)"/.exec(svg)?.[1]);
 		expect(width(both)).toBeGreaterThan(width(plain));
-		expect(both).not.toContain('id="badgr-gold-s"');
+		expect(both).not.toContain('id="badger-gold-s"');
 	});
 });
 
@@ -100,7 +100,7 @@ describe('SARIF edge cases', () => {
 	});
 
 	test('fingerprints of different findings do not collide through the separator', () => {
-		const fp = (f: Finding) => (sarifLog([report([f])], { fileOf: x => x, lineOf: () => 'x' }) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgrFinding/v1'];
+		const fp = (f: Finding) => (sarifLog([report([f])], { fileOf: x => x, lineOf: () => 'x' }) as { runs: { results: { partialFingerprints: Record<string, string> }[] }[] }).runs[0].results[0].partialFingerprints['badgerFinding/v1'];
 		expect(fp({ ...finding, file: 'a|b', call: 'c' })).not.toBe(fp({ ...finding, file: 'a', call: 'b|c' }));
 	});
 });

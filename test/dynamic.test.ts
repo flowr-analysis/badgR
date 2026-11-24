@@ -19,7 +19,7 @@ const DynamicBlock = `  dynamic-call:
 
 const text = fs.readFileSync(DefaultPolicyPath, 'utf8');
 const policy = /^\s+dynamic: true$/m.test(text) ? loadPolicy() : parsePolicy(text.replace(/^capabilities:\n/m, m => m + DynamicBlock), 'dynamic.yaml', 'test');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-dyn-'));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-dyn-'));
 const order = [...policy.tiers.map(t => t.name), policy.fallbackTier.name];
 
 async function run(code: string, p = policy) {

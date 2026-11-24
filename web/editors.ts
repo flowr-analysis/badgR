@@ -12,7 +12,7 @@ import { FileRoles, Shipped, parsePolicy, PolicyError } from '../src/policy-core
 import type { PolicyVocabulary } from './protocol';
 
 /* the page's content security policy admits CodeMirror's style sheet by this nonce only */
-export const StyleNonce = 'badgr';
+export const StyleNonce = 'badger';
 
 function base(onChange: (text: string) => void): Extension[] {
 	return [
@@ -199,7 +199,7 @@ function policyLinter(view: EditorView): Diagnostic[] {
 		return [];
 	} catch(e) {
 		const msg = e instanceof Error ? e.message.replace(/^policy: /, '') : String(e);
-		/* the YAML parser names a line; badgR's own checks name a key, which is looked up */
+		/* the YAML parser names a line; badger's own checks name a key, which is looked up */
 		const lineNo = /line (\d+)/.exec(msg)?.[1];
 		const key = /^([\w.\[\]-]+)/.exec(msg)?.[1]?.split(/[.[\]]/).filter(Boolean).at(-1);
 		let from = 0;

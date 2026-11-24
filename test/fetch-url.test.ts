@@ -28,7 +28,7 @@ describe('links on the command line', () => {
 	});
 
 	describe('downloads', () => {
-		const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-url-'));
+		const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-url-'));
 		afterEach(() => {
 			vi.unstubAllGlobals();
 			vi.unstubAllEnvs();

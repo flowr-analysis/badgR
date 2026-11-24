@@ -11,7 +11,7 @@ import { loadPolicy } from '../src/policy';
 import { ensureSigDb } from '../src/sigdb';
 
 const policy = loadPolicy();
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-cx-'));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-cx-'));
 const order = [...policy.tiers.map(t => t.name), policy.fallbackTier.name];
 
 async function run(code: string) {

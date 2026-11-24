@@ -16,7 +16,7 @@ export interface ReviewEntry {
 }
 
 export interface ReviewFile {
-	readonly badgrReview: 1
+	readonly badgerReview: 1
 	readonly entries:     readonly ReviewEntry[]
 }
 
@@ -32,7 +32,7 @@ export function parseReview(text: string): ReviewEntry[] {
 }
 
 export function reviewFile(entries: Iterable<ReviewEntry>): ReviewFile {
-	return { badgrReview: 1, entries: [...entries].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0) };
+	return { badgerReview: 1, entries: [...entries].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0) };
 }
 
 /** how many findings each state has, and how many nobody looked at yet */

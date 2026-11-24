@@ -24,7 +24,7 @@ describe('quick fixes as a patch', () => {
 		const diff = unifiedDiff('app.R', code, fixes);
 		expect(diff).toContain('-system(paste("ls", name))\n+system(paste("ls", shQuote(name)))');
 		expect(diff.match(/^@@/gm)).toHaveLength(2);
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badgr-patch-'));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'badger-patch-'));
 		fs.writeFileSync(path.join(dir, 'app.R'), code);
 		fs.writeFileSync(path.join(dir, 'fix.patch'), diff);
 		execFileSync('git', ['apply', 'fix.patch'], { cwd: dir });
