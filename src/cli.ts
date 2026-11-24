@@ -12,14 +12,19 @@ import type { Report } from './core';
 import { markdownReport, textReport } from './report';
 import { ProgressPrinter } from './progress';
 import { fetchPackage, packageLabel, packageSpec } from './fetch-package';
+import { fetchUrl, urlSpec } from './fetch-url';
 
-const usage = `Usage: badgr [options] <script.R | folder | package>...
+const usage = `Usage: badgr [options] <script.R | folder | package | url>...
 
 Assigns a policy tier (gold, silver, bronze, or none) to R scripts, Shiny apps, and projects
 with the static analysis of flowR.
 
 A package is a CRAN package by name (glue, glue@1.8.0, cran:glue) or a Bioconductor
 package (bioc:limma), downloaded once from its GitHub mirror into ~/.cache/badgr/packages.
+A url is read as the web page reads it: a GitHub repository, folder, or file
+(https://github.com/owner/repo/tree/main/app), a gist, a GitLab project, a CRAN page, a link
+of the flowR playground or of the web page, or an R file or .zip anywhere; it is downloaded
+on every run into ~/.cache/badgr/urls.
 
 Options:
   --policy <file.yaml>   the policy (default: the tiers of the threat model)
@@ -116,12 +121,14 @@ async function main(): Promise<number> {
 	const reports = [];
 	const printer = new ProgressPrinter(positionals.length, process.stderr, values.quiet);
 	for(const [i, target] of positionals.entries()) {
-		const pkg = packageSpec(target);
+		const url = urlSpec(target);
+		const pkg = url === undefined ? packageSpec(target) : undefined;
 		printer.startArtifact(i, pkg ? packageLabel(pkg) : target);
 		let dir = target;
-		if(pkg !== undefined) {
+		if(url !== undefined || pkg !== undefined) {
 			try {
-				dir = await fetchPackage(pkg, values.quiet ? undefined : err);
+				const log = values.quiet ? undefined : err;
+				dir = url !== undefined ? await fetchUrl(url, log) : await fetchPackage(pkg as NonNullable<typeof pkg>, log);
 			} catch(e) {
 				err(e instanceof Error ? e.message : String(e));
 				return 1;

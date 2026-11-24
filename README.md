@@ -51,16 +51,18 @@ npm run badgr -- app/                           # a folder or an .R, .Rmd, or .q
 npm run badgr -- app/ --json report.json --md report.md --badge badge.svg
 npm run badgr -- app/ --sarif badgr.sarif               # SARIF 2.1.0 for code scanning
 npm run badgr -- glue@1.8.0                     # a CRAN package (or cran:glue, bioc:limma), from its GitHub mirror
+npm run badgr -- https://github.com/owner/repo/tree/main/app   # a url, read as the playground reads it
 npm run badgr -- app/ --min-tier silver         # exit code 2 below silver
 npm run badgr -- app/ --review review.json      # reviewer decisions from the playground
 ```
 
 With Docker: the image [`eagleoutice/badgr`](https://hub.docker.com/r/eagleoutice/badgr) carries flowR and its
-signature database and needs no network.
+signature database and needs no network, except to download a package or a url.
 
 ```sh
 docker run --rm -v "$PWD/app:/work/src:ro" eagleoutice/badgr --min-tier silver /work/src
 ./badgr app/ --badge badge.svg                  # the same through the wrapper; output in ./badgr-out
+./badgr https://github.com/owner/repo           # a url or a package, downloaded inside the container
 docker build -t badgr . && BADGR_IMAGE=badgr ./badgr app/      # an image built from this repository
 ```
 

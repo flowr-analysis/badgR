@@ -92,37 +92,54 @@ export function packageCache(): string {
  */
 export async function fetchPackage(p: PackageSpec, log: (msg: string) => void = () => {}): Promise<string> {
 	const dir = path.join(packageCache(), `${p.repo}-${p.name}${p.version ? `@${p.version}` : ''}`);
-	const stamp = path.join(dir, '.badgr-fetched');
+	const stamp = path.join(dir, Stamp);
 	if(fs.existsSync(stamp) && (p.version !== undefined || Date.now() - fs.statSync(stamp).mtimeMs < 24 * 3600 * 1000)) {
 		return dir;
 	}
-	const url = archiveUrl(p);
-	log(`downloading ${packageLabel(p)} from ${url}`);
+	return fetchTarball(archiveUrl(p), dir, packageLabel(p), log, status => status === 404
+		? `no such package${p.version ? ' or version' : ''} on github.com/${p.repo}` : undefined);
+}
+
+/** marks a folder as downloaded completely */
+const Stamp = '.badgr-fetched';
+
+/**
+ * Downloads a GitHub archive (`.tar.gz`, everything below its top folder) into `dir`, keeping only the R
+ * code and the package metadata. Paths that would leave the folder are refused.
+ */
+export async function fetchTarball(url: string, dir: string, label: string, log: (msg: string) => void = () => {}, explain: (status: number) => string | undefined = () => undefined): Promise<string> {
+	log(`downloading ${label} from ${url}`);
 	const res = await fetch(url);
 	if(!res.ok) {
-		throw new Error(res.status === 404
-			? `${packageLabel(p)}: no such package${p.version ? ' or version' : ''} on github.com/${p.repo} (${url} answered 404)`
-			: `${packageLabel(p)}: ${url} answered ${res.status}`);
+		const why = explain(res.status);
+		throw new Error(`${label}: ${why ? `${why} (${url} answered ${res.status})` : `${url} answered ${res.status}`}`);
 	}
 	/* at most 1 GiB unpacked: a small archive must not unpack to more than the memory has */
-	const files = untar(gunzipSync(new Uint8Array(await res.arrayBuffer()), { maxOutputLength: 1 << 30 }));
-	/* unpacked next to the folder and moved in at the end: an archive that fails halfway, or a second
-	   run of badgr, never leaves or reads a half-written package */
+	const files = untar(gunzipSync(new Uint8Array(await res.arrayBuffer()), { maxOutputLength: 1 << 30 }))
+		/* GitHub puts everything below `<repo>-<ref>/` */
+		.map(f => ({ path: f.path.split('/').slice(1).join('/'), content: f.content, from: f.path }));
+	return writeFolder(files, dir, label, log);
+}
+
+/**
+ * Writes the R code and package metadata of `files` into `dir`, replacing what was there. The files are
+ * written next to the folder and moved in at the end: a download that fails halfway, or a second run of
+ * badgr, never leaves or reads a half-written folder. Paths that would leave the folder are refused.
+ */
+export function writeFolder(files: readonly { path: string, content: Uint8Array | string, from?: string }[], dir: string, label: string, log: (msg: string) => void = () => {}): string {
 	const work = `${dir}.tmp-${process.pid}-${Date.now()}`;
 	fs.rmSync(work, { recursive: true, force: true });
 	fs.mkdirSync(work, { recursive: true });
 	let kept = 0;
 	try {
 		for(const f of files) {
-			/* GitHub puts everything below `<repo>-<ref>/` */
-			const rel = f.path.split('/').slice(1).join('/');
+			const rel = f.path;
 			if(rel === '' || !(RFilePattern.test(rel) || MetaFilePattern.test(rel))) {
 				continue;
 			}
 			const to = path.resolve(work, rel);
 			if(!to.startsWith(work + path.sep) || rel.split('/').includes('..')) {
-				fs.rmSync(work, { recursive: true, force: true });
-				throw new Error(`${packageLabel(p)}: the archive has a path outside its folder: ${f.path}`);
+				throw new Error(`${label}: the archive has a path outside its folder: ${f.from ?? f.path}`);
 			}
 			fs.mkdirSync(path.dirname(to), { recursive: true });
 			fs.writeFileSync(to, f.content);
@@ -132,9 +149,9 @@ export async function fetchPackage(p: PackageSpec, log: (msg: string) => void = 
 		fs.rmSync(work, { recursive: true, force: true });
 		throw e;
 	}
-	fs.writeFileSync(path.join(work, '.badgr-fetched'), new Date().toISOString() + '\n');
+	fs.writeFileSync(path.join(work, Stamp), new Date().toISOString() + '\n');
 	fs.rmSync(dir, { recursive: true, force: true });
 	fs.renameSync(work, dir);
-	log(`${packageLabel(p)}: ${kept} file(s) in ${dir}`);
+	log(`${label}: ${kept} file(s) in ${dir}`);
 	return dir;
 }

@@ -1,9 +1,7 @@
 import type { Progress, Report } from '../src/core';
+import type { SourceFile } from '../src/sources';
 
-export interface SourceFile {
-	readonly path:    string
-	readonly content: string
-}
+export type { SourceFile };
 
 /** what the policy editor completes: the names flowR knows */
 export interface PolicyVocabulary {
