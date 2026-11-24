@@ -138,7 +138,7 @@ details.inline[open] p { margin: 6px 0 2px; max-width: 760px; }
 .seg button { border: 0; background: transparent; padding: 2px 10px; font: inherit; font-size: 12.5px; cursor: pointer; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--warn-bg); color: var(--ink); }
 .drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 1px dashed var(--faint); border-radius: var(--r); padding: 36px 12px; cursor: pointer; text-align: center; }
-.drop.over { border-color: var(--accent); background: var(--warn-bg); }
+body.drag-over .drop { border-color: var(--accent); background: var(--warn-bg); }
 .drop input { display: none; }
 .drop-main { font-weight: 600; }
 .drop-sub { color: var(--muted); font-size: 12.5px; }
@@ -631,3 +631,4 @@ html, body { overflow-x: clip; }
 body.raw-view > :not(#raw) { display: none !important; }
 pre.raw { margin: 0; padding: var(--s3, 16px); white-space: pre-wrap; word-break: break-word; font: 13px/1.45 var(--mono); color: var(--ink); background: var(--bg, transparent); }
 .review-actions { justify-content: flex-end; gap: var(--s1); }
+body.drag-over .pane.input { outline: 2px dashed var(--accent); outline-offset: -6px; }

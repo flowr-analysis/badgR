@@ -315,6 +315,23 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
+	test('a link dropped on the page is fetched and analyzed', async() => {
+		const { page, requests, errors } = await open();
+		const link = `${origin}/#code=${encodeURIComponent('x <- readline()\nsystem(x)\n')}`;
+		const data = await page.evaluateHandle(url => {
+			const d = new DataTransfer();
+			d.setData('text/uri-list', url);
+			return d;
+		}, link);
+		await page.dispatchEvent('#empty', 'dragover', { dataTransfer: data });
+		await page.dispatchEvent('#empty', 'drop', { dataTransfer: data });
+		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#url-input').inputValue()).toBe(link);
+		expectLocal(requests);
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
 	test('live analysis is on by default: an edit analyzes again', async() => {
 		const { page, errors } = await open();
 		expect(await page.locator('#live').getAttribute('aria-pressed')).toBe('true');

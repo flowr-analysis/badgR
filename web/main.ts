@@ -878,7 +878,6 @@ function retier(): void {
 
 /* ---------------------------------------------------------------- inputs */
 
-const drop = $('drop');
 $<HTMLInputElement>('file-input').addEventListener('change', ev => {
 	const input = ev.target as HTMLInputElement;
 	const list = [...input.files ?? []];
@@ -891,17 +890,45 @@ $<HTMLInputElement>('folder-input').addEventListener('change', ev => {
 	void analyze(list[0]?.webkitRelativePath.split('/')[0] ?? 'folder', () => fromFiles(list));
 	input.value = '';
 });
-drop.addEventListener('dragover', ev => {
-	ev.preventDefault();
-	drop.classList.add('over');
+/** the link a drag carries: the first entry of a uri-list, or plain text that reads as one */
+function droppedLink(data: DataTransfer): string | undefined {
+	const uri = data.getData('text/uri-list').split(/\r?\n/).map(l => l.trim()).find(l => l !== '' && !l.startsWith('#'));
+	const text = uri ?? data.getData('text/plain').trim();
+	return text !== '' && !/\s/.test(text) && describeUrl(text) !== undefined && /^(https?:\/\/|[\w.-]+\.[a-z]{2,}\/|[\w.-]+\/[\w.-]+$)/i.test(text) ? text : undefined;
+}
+/* files, folders, and links dropped anywhere but in an editor or a text field, which take text themselves */
+const dropTarget = (ev: DragEvent) => !(ev.target as Element | null)?.closest?.('.cm-editor, input, textarea');
+const carries = (ev: DragEvent) => [...ev.dataTransfer?.types ?? []].some(t => t === 'Files' || t === 'text/uri-list' || t === 'text/plain');
+document.addEventListener('dragover', ev => {
+	if(dropTarget(ev) && carries(ev)) {
+		ev.preventDefault();
+		document.body.classList.add('drag-over');
+	}
 });
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', ev => {
-	ev.preventDefault();
-	drop.classList.remove('over');
-	const items = ev.dataTransfer?.items;
-	if(items) {
+document.addEventListener('dragleave', ev => {
+	if(ev.relatedTarget === null) {
+		document.body.classList.remove('drag-over');
+	}
+});
+document.addEventListener('drop', ev => {
+	document.body.classList.remove('drag-over');
+	const data = ev.dataTransfer;
+	if(!data || !dropTarget(ev)) {
+		return;
+	}
+	if(data.types.includes('Files')) {
+		ev.preventDefault();
+		const items = data.items;
 		void analyze(items[0]?.webkitGetAsEntry()?.name ?? 'dropped files', () => fromDrop(items));
+		return;
+	}
+	const url = droppedLink(data);
+	if(url !== undefined) {
+		ev.preventDefault();
+		document.querySelector<HTMLButtonElement>('[data-tab="url"]')?.click();
+		$<HTMLInputElement>('url-input').value = url;
+		$<HTMLInputElement>('url-input').dispatchEvent(new Event('input'));
+		$<HTMLFormElement>('url-form').requestSubmit();
 	}
 });
 /* the names of the packages the page has data for, offered while typing a bare name */
