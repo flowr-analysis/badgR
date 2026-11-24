@@ -1390,6 +1390,9 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		if(n > 0) {
 			stats.append(stat(`${plural(n, 'lint result')}${fixes ? `, ${fixes} fixable` : ''}`, 'c-lint', `${listing(hits.map(l => `${l.rule} (${l.count})`))}. Click to see them.`,
 				() => $('lint').scrollIntoView({ block: 'start', behavior: 'smooth' })));
+		} else if(r.lint.length > 0) {
+			stats.append(stat('0 lint results', 'ok', `none of the ${plural(r.lint.length, 'linting rule')} reports anything. Click to see them.`,
+				() => $('lint').scrollIntoView({ block: 'start', behavior: 'smooth' })));
 		}
 		if(pending.length > 0) {
 			stats.append(stat(`${pending.length} still running`, 'c-pending', `linting rules not done yet: ${listing(pending)}. Click to see them.`,
@@ -2220,23 +2223,13 @@ function renderLint(r: Report, incremental = false): void {
 		d.append(el('summary', '', 'show the patch'), diffView(fixes.patch, true));
 		bar.append(d);
 	}
-	/* nothing to see: the section starts folded; a redraw of the same report leaves it as the reader set it */
-	if(!incremental) {
-		($('lint').closest('details') as HTMLDetailsElement).open = clean.length < r.lint.length || pending.length > 0;
-	}
-	const cleanRow = el('div', 'lint clean');
-	const allClean = clean.length === r.lint.length && pending.length === 0;
-	cleanRow.append(el('span', 'mark', '✓'), el('span', 'hint', `${allClean ? `All ${plural(clean.length, 'rule')}` : plural(clean.length, 'rule')} found nothing: `));
-	clean.forEach((l, i) => {
-		const a = link(l.docs ?? Docs.lintOverview, l.rule, l.about ?? l.title);
-		a.className = 'rule';
-		cleanRow.append(...(i > 0 ? [' '] : []), a);
-	});
 	/* which query runs, and which tiers need which rule */
 	const intro = el('p', 'lint-intro hint');
-	const needs = (policy?.tiers ?? []).filter(t => t.lint.length > 0).map(t => `${t.name} needs ${listing(t.lint)}`);
-	intro.append('badgR runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '.',
-		needs.length > 0 ? ` ${sentence(listing(needs))} to report nothing. The other rules are advice and do not change the tier.` : ' They are advice and do not change the tier.');
+	intro.append('badgR runs these rules with flowR\'s ', link(Docs.linter, 'linter query'), '. A rule a tier needs must report nothing for that tier; the other rules are advice and do not change the tier.');
+	const neededFor = (rule: string) => {
+		const tiers = (policy?.tiers ?? []).filter(t => t.lint.includes(rule)).map(t => t.name);
+		return tiers.length > 0 ? [el('span', 'hint needed', `needed for ${listing(tiers)}`)] : [];
+	};
 	/* the rules not done yet, each with what it checks; they run one after the other, in this order */
 	const waiting = pending.map((rule, i) => {
 		const v = vocabulary?.lintRules.find(x => x.name === rule);
@@ -2246,7 +2239,8 @@ function renderLint(r: Report, incremental = false): void {
 		row.append(el('span', i === 0 ? 'mark spin' : 'mark', i === 0 ? '' : '·'), name, el('span', 'hint', i === 0 ? 'running' : 'waiting'));
 		return row;
 	});
-	$('lint').replaceChildren(intro, ...(fixes.count > 0 ? [bar] : []), ...r.lint.filter(l => !clean.includes(l)).map(l => {
+	/* every rule on its own line, those that report something first */
+	$('lint').replaceChildren(intro, ...(fixes.count > 0 ? [bar] : []), ...[...r.lint.filter(l => !clean.includes(l)), ...clean].map(l => {
 		const state = l.error ? 'failed' : l.count > 0 ? 'hits' : 'clean';
 		const name = link(l.docs ?? Docs.lintOverview, l.rule, l.about ?? l.title);
 		name.className = 'rule';
@@ -2261,15 +2255,16 @@ function renderLint(r: Report, incremental = false): void {
 			return row;
 		}
 		if(state === 'clean') {
+			/* a rule that found nothing says so with its 0, and which tiers need that */
 			const row = el('div', 'lint clean');
-			row.append(el('span', 'mark', '✓'), name, el('span', 'hint', text));
+			row.append(el('span', 'mark', '✓'), name, el('span', 'lint-count', '0'), ...neededFor(l.rule));
 			return row;
 		}
 		const d = el('details', `lint ${state}`);
 		d.dataset.key = l.rule;
 		d.open = state === 'hits' && l.count <= 5;
 		const s = el('summary');
-		s.append(el('span', 'mark', '✗'), name, el('span', 'lint-count', text));
+		s.append(el('span', 'mark', '✗'), name, el('span', 'lint-count', text), ...neededFor(l.rule));
 		d.append(s);
 		const ul = el('ul');
 		for(const x of l.results.slice(0, 200)) {
@@ -2291,7 +2286,7 @@ function renderLint(r: Report, incremental = false): void {
 		}
 		d.append(ul);
 		return d;
-	}), ...(clean.length > 0 ? [cleanRow] : []), ...waiting);
+	}), ...waiting);
 }
 
 /* ---------------------------------------------------------------- the badges of the policy */
