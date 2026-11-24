@@ -196,10 +196,10 @@ function fromOwnLink(url: string): SourceFile[] | undefined {
 	const z = q.get('z');
 	if(z !== null) {
 		const bin = atob(z.replace(/-/g, '+').replace(/_/g, '/'));
-		return [{ path: 'script.R', content: strFromU8(inflateLimited(Uint8Array.from(bin, c => c.charCodeAt(0)))) }];
+		return [{ path: 'main.R', content: strFromU8(inflateLimited(Uint8Array.from(bin, c => c.charCodeAt(0)))) }];
 	}
 	const code = q.get('code');
-	return code === null ? undefined : [{ path: 'script.R', content: code }];
+	return code === null ? undefined : [{ path: 'main.R', content: code }];
 }
 
 /** a gist: one request lists its files with their content */
@@ -425,7 +425,7 @@ export async function fromUrl(url: string, progress: (msg: string) => void = () 
 	if(!res.ok) {
 		throw new SourceError(`the server answered ${res.status} for ${url}`);
 	}
-	const name = new URL(url).pathname.split('/').pop() || 'script.R';
+	const name = new URL(url).pathname.split('/').pop() || 'main.R';
 	if(/\.zip$/i.test(name) || res.headers.get('content-type')?.includes('zip')) {
 		return fromZip(new Uint8Array(await res.arrayBuffer()));
 	}

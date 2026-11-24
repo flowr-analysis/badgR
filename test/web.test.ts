@@ -91,8 +91,7 @@ async function setCode(page: Page, code: string): Promise<void> {
 
 /** loads an example from the menu */
 async function pickExample(page: Page, label: string): Promise<void> {
-	await page.click('[data-tab="paste"]');
-	await page.click('#examples-label');
+	await page.click('[data-tab="examples"]');
 	await page.click(`#examples button[data-label="${label}"]`);
 }
 
@@ -162,7 +161,7 @@ describe('links, exports, and the policy', () => {
 		expect(sarif.version).toBe('2.1.0');
 		expect(sarif.runs[0].properties.tier).toBe('none');
 		const shell = sarif.runs[0].results.find(r => r.ruleId === 'badger/shell');
-		expect(shell?.hostedViewerUri).toMatch(/#z=[^&]+&tier=none&n=1&at=f%3Ascript.R%3A2%3Abase%253A%253Asystem$/);
+		expect(shell?.hostedViewerUri).toMatch(/#z=[^&]+&tier=none&n=1&at=f%3Amain.R%3A2%3Abase%253A%253Asystem$/);
 		/* the result's link selects the finding */
 		const again = await browser.newPage();
 		await again.goto(shell?.hostedViewerUri ?? '');
@@ -307,7 +306,7 @@ describe('the playground', () => {
 		await pickExample(page, 'bronze');
 		await page.click('#analyze-code');
 		/* a locator, not waitForFunction: the page's content security policy forbids the eval the latter needs */
-		await page.locator('#verdict-title', { hasText: 'example: bronze' }).waitFor({ timeout: 120_000 });
+		await page.locator('#verdict-title', { hasText: 'example-bronze.R' }).waitFor({ timeout: 120_000 });
 		expect(await tierOf(page)).toBe('bronze');
 		expect(await page.locator('#findings tbody tr').count()).toBe(1);
 		expectLocal(requests);
@@ -338,7 +337,7 @@ describe('the playground', () => {
 		await pickExample(page, 'bronze');
 		expect(await tierOf(page)).toBe('bronze');
 		await setCode(page, 'x <- readline()\nsystem(x)\n');
-		await page.locator('#verdict-title', { hasText: 'pasted code' }).waitFor({ timeout: 120_000 });
+		await page.locator('#verdict-title', { hasText: 'main.R' }).waitFor({ timeout: 120_000 });
 		expect(await tierOf(page)).toBe('none');
 		expect(errors).toEqual([]);
 		await page.close();
@@ -400,12 +399,13 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
-	test('the badger version and the footer link to the releases', async() => {
+	test('the footer links the releases, the header GitHub and Docker Hub', async() => {
 		const { page, errors } = await open();
 		/* the versions show once, in the footer */
 		expect(await page.locator('#footer #v-badger').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR/releases');
 		expect(await page.locator('header .ver').count()).toBe(0);
-		expect(await page.locator('#footer a', { hasText: 'source' }).getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR');
+		expect(await page.locator('header a.gh[aria-label="badger on GitHub"]').getAttribute('href')).toBe('https://github.com/flowr-analysis/badgR');
+		expect(await page.locator('header a.gh[aria-label="badger on Docker Hub"]').getAttribute('href')).toBe('https://hub.docker.com/r/eagleoutice/badger');
 		expect(errors).toEqual([]);
 		await page.close();
 	});

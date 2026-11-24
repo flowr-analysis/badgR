@@ -7,7 +7,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'nonce-badger'; img-src 'self' data: blob:; connect-src 'self' data: https:; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <title>badger playground</title>
-<meta name="description" content="Policy tiers for R scripts, Shiny apps, and projects, computed with flowR in your browser.">
+<meta name="description" content="Checks R scripts, Shiny apps, and projects against a policy of tiers, with flowR, in your browser.">
 <link rel="icon" href="badger-icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 <script src="main.js" defer></script>
@@ -15,9 +15,9 @@
 <body>
 <header class="bar">
   <a class="brand" href="./"><img src="badger-icon.svg" alt="" width="30" height="35">badger</a>
-  <span class="tagline">security tiers for R code, using flowR's static analysis</span>
-<div class="local" role="note">
-  <strong>Runs locally.</strong> Your code is analyzed in this browser and is never uploaded.
+  <span class="tagline">checks R code against a policy, with flowR's static analysis</span>
+<div class="local" role="note" tabindex="0">
+  <strong>Runs locally</strong><span class="local-more"> Your code is analyzed in this browser and is never uploaded.
   <details class="how"><summary>How to check</summary>
     <div class="how-body">
       <p>flowR, compiled to JavaScript and WebAssembly, runs in a web worker of this page. The page makes only these requests:</p>
@@ -35,9 +35,13 @@
       <p>To check it yourself, open the network tab of your browser's developer tools while you analyze, or go
         offline after the page has loaded and analyze an upload.</p>
     </div>
-  </details>
+  </details></span>
 </div>
-  <button type="button" class="theme" id="theme" title="light, dark, or as the system">auto</button>
+  <span class="bar-end">
+    <a class="gh" href="https://hub.docker.com/r/eagleoutice/badger" title="the Docker image eagleoutice/badger, for CI and offline use" aria-label="badger on Docker Hub"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13.98 11.08h2.12a.19.19 0 0 0 .19-.19V9a.19.19 0 0 0-.19-.19h-2.12a.18.18 0 0 0-.18.18v1.9c0 .1.08.19.18.19m-2.95-5.43h2.12a.19.19 0 0 0 .18-.19V3.57a.19.19 0 0 0-.18-.18h-2.12a.18.18 0 0 0-.19.18v1.9c0 .1.09.18.19.18m0 2.71h2.12a.19.19 0 0 0 .18-.18V6.29a.19.19 0 0 0-.18-.18h-2.12a.18.18 0 0 0-.19.18v1.89c0 .1.09.18.19.18m-2.93 0h2.12a.19.19 0 0 0 .18-.18V6.29a.18.18 0 0 0-.18-.18H8.1a.18.18 0 0 0-.18.18v1.89c0 .1.08.18.18.18m-2.96 0h2.11a.19.19 0 0 0 .19-.18V6.29a.18.18 0 0 0-.19-.18H5.14a.19.19 0 0 0-.19.18v1.89c0 .1.08.18.19.18m5.89 2.72h2.12a.19.19 0 0 0 .18-.19V9a.19.19 0 0 0-.18-.19h-2.12a.18.18 0 0 0-.19.18v1.9c0 .1.09.19.19.19m-2.93 0h2.12a.18.18 0 0 0 .18-.19V9a.18.18 0 0 0-.18-.19H8.1a.18.18 0 0 0-.18.18v1.9c0 .1.08.19.18.19m-2.96 0h2.11a.18.18 0 0 0 .19-.19V9a.18.18 0 0 0-.18-.19H5.14a.19.19 0 0 0-.19.19v1.88c0 .1.08.19.19.19m-2.92 0h2.12a.18.18 0 0 0 .18-.19V9a.18.18 0 0 0-.18-.19H2.22a.18.18 0 0 0-.19.18v1.9c0 .1.08.19.19.19m21.54-1.19c-.06-.05-.67-.51-1.95-.51-.34 0-.68.03-1.01.09-.25-1.7-1.65-2.53-1.71-2.56l-.34-.2-.23.33a4.6 4.6 0 0 0-.61 1.43c-.23.97-.09 1.88.4 2.66-.59.33-1.55.41-1.74.42H.75a.75.75 0 0 0-.75.75 11.38 11.38 0 0 0 .7 4.06c.55 1.43 1.37 2.48 2.43 3.13 1.19.73 3.13 1.15 5.33 1.15.99 0 1.98-.09 2.96-.27a12.25 12.25 0 0 0 3.86-1.4 10.65 10.65 0 0 0 2.63-2.16c1.27-1.43 2.02-3.03 2.58-4.45h.22c1.39 0 2.25-.56 2.72-1.02.31-.3.56-.66.71-1.07l.1-.29z"/></svg></a>
+    <a class="gh" href="https://github.com/flowr-analysis/badgR" title="badger on GitHub: source, issues, and releases" aria-label="badger on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+    <button type="button" class="theme" id="theme" title="light, dark, or as the system">auto</button>
+  </span>
 </header>
 
 <main class="split">
@@ -46,24 +50,26 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected="false" data-tab="upload">Upload</button>
       <button role="tab" aria-selected="true" data-tab="paste">Code</button>
+      <button role="tab" aria-selected="false" data-tab="examples">Examples</button>
       <button role="tab" aria-selected="false" data-tab="url">URL</button>
       <button role="tab" aria-selected="false" data-tab="policy">Policy</button>
     </div>
 
     <div class="panel" data-panel="paste">
-      <div class="row examples">
-        <details class="menu" id="examples-menu">
-          <summary class="button secondary small" id="examples-label">Load an example</summary>
-          <div class="menu-list examples-list" id="examples"></div>
-        </details>
-        <span class="hint">or paste R code below</span>
+      <p class="code-name hint">analyzed as <code id="code-name">main.R</code></p>
+      <div class="editor-box">
+        <div id="code" class="editor"></div>
+        <div class="editor-actions">
+          <span id="code-status" class="hint"></span>
+          <button type="button" class="button secondary small toggle" id="live" aria-pressed="true" title="live: analyze again after each edit (click to turn off)">Live</button>
+          <button class="button" id="analyze-code" title="Ctrl+Enter">Analyze</button>
+        </div>
       </div>
-      <div id="code" class="editor"></div>
-      <div class="row">
-        <button class="button" id="analyze-code" title="Ctrl+Enter">Analyze</button>
-        <button type="button" class="button secondary small toggle" id="live" aria-pressed="true" title="live: analyze again after each edit (click to turn off)">Live</button>
-        <span id="code-status" class="hint"></span>
-      </div>
+    </div>
+
+    <div class="panel" data-panel="examples" hidden>
+      <p class="hint">One example per tier: the badge it gets and what the code does. Picking one puts it in the editor.</p>
+      <div class="examples-list" id="examples"></div>
     </div>
 
     <div class="panel" data-panel="upload" hidden>
@@ -105,7 +111,7 @@
     </div>
 
     <details class="badges-box">
-      <summary>The badges <span class="hint">strictest first, from the current policy</span></summary>
+      <summary>The policy's tiers <span class="hint">strictest first</span></summary>
       <ol class="tier-list" id="tier-table"></ol>
       <details class="use"><summary>Use the badge in a README or in CI, with the Docker image <code>eagleoutice/badger</code></summary><pre class="snippet" id="snippet"></pre></details>
     </details>
@@ -114,7 +120,7 @@
 
   <section class="pane report" aria-label="report">
     <div id="empty" class="empty">
-      <p>Analyze the code in the editor, upload a project, fetch one from GitHub, or start with an example.</p>
+      <p>Paste code, upload a project, give a URL, or start with an example. badger checks it against the policy and shows the strictest tier it meets.</p>
       <div class="start" id="start"></div>
     </div>
 
@@ -138,7 +144,7 @@
         <p id="verdict-pending" class="pending-note" hidden></p>
         <div id="summary" class="summary"></div>
         <div class="actions" id="downloads"></div>
-        <details class="all" id="all-results"><summary>Details: every result as text, and how it was analyzed</summary><p id="verdict-meta" class="meta"></p><div id="all-body"></div></details>
+        <details class="all" id="all-results"><summary>Details: how it was analyzed, and every result as text</summary><p id="verdict-meta" class="meta"></p><h4>flowR queries <span id="query-count" class="count"></span></h4><div id="queries"></div><div id="all-body"></div></details>
       </div>
 
       <details class="block" open>
@@ -154,17 +160,12 @@
         <div class="row review-actions" id="review-actions"></div>
       </details>
 
-      <details class="block code-block" id="code-block">
-        <summary><h3>Code</h3></summary>
-        <div class="file-tabs" id="file-tabs"></div>
+      <section class="block code-block" id="code-block" hidden aria-label="the picked finding in its code">
+        <div class="row code-head"><div class="file-tabs" id="file-tabs"></div><button type="button" class="button secondary small" id="code-close" title="hide the code">Close</button></div>
         <div class="code" id="code-view" tabindex="0"></div>
         <div id="popover" class="popover" hidden></div>
-      </details>
+      </section>
 
-      <details class="block">
-        <summary><h3>flowR queries <span id="query-count" class="count"></span></h3></summary>
-        <div id="queries"></div>
-      </details>
     </div>
   </section>
 </main>
@@ -176,7 +177,6 @@
     <a class="ver" id="v-docker" href="https://hub.docker.com/r/eagleoutice/badger" title="badger as a Docker image, with flowR's signature database inside, for CI and offline use: docker run eagleoutice/badger (formerly eagleoutice/badgr)"><span class="k">docker</span><span class="v">eagleoutice/badger</span></a>
     <a class="ver" id="v-badger" href="https://github.com/flowr-analysis/badgR/releases" title="badger releases and changes"><span class="k">badger</span><span class="v">…</span></a>
   </span>
-  <span id="footer-note"></span>
 </footer>
 </body>
 </html>

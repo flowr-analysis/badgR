@@ -85,8 +85,6 @@ function showVersions(): void {
 	f.href = `https://github.com/flowr-analysis/flowr/releases/tag/v${FLOWR_VERSION}`;
 	$('v-sigdb').querySelector('.v')!.textContent = sigdbTag ?? '…';
 	$('v-badger').querySelector('.v')!.textContent = BADGER_VERSION;
-	$('footer-note').replaceChildren(link('https://github.com/flowr-analysis/badgR', 'source'),
-		' · the latest version of each CRAN package (the command line has every version) · GPL-3.0');
 }
 showVersions();
 if(BADGER_LIVE) {
@@ -207,6 +205,11 @@ document.addEventListener('click', e => {
 	if(!t.closest('#popover, .code [class^="m-"], .code [class*=" m-"], .fn-link, #findings tr, .jump, .matrix span')) {
 		$('popover').hidden = true;
 	}
+});
+
+$('code-close').addEventListener('click', () => {
+	$('code-block').hidden = true;
+	$('popover').hidden = true;
 });
 
 /* ---------------------------------------------------------------- tabs */
@@ -966,6 +969,9 @@ $('url-form').addEventListener('submit', ev => {
 const liveButton = $<HTMLButtonElement>('live');
 function setLive(on: boolean): void {
 	liveButton.setAttribute('aria-pressed', String(on));
+	/* with live analysis, Analyze is rarely needed: as small as the toggle */
+	$('analyze-code').classList.toggle('small', on);
+	$('analyze-code').classList.toggle('secondary', on);
 	liveButton.title = on ? 'live: analyze again after each edit (click to turn off)' : 'analyze only on Analyze (click to analyze after each edit)';
 }
 /* live is the default; turning it off is kept in this browser */
@@ -989,11 +995,11 @@ function setCodeQuietly(text: string): void {
 const editorFiles = (): SourceFile[] => {
 	const text = codeView.state.doc.toString();
 	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
-	return ex ? ex.files : [{ path: 'script.R', content: text }];
+	return ex ? ex.files : [{ path: 'main.R', content: text }];
 };
 const editorTarget = () => {
 	const text = codeView.state.doc.toString();
-	return `${Examples.find(e => e.files.map(f => f.content).join('\n') === text)?.label.replace(/^/, 'example: ') ?? 'pasted code'}`;
+	return Examples.find(e => e.files.map(f => f.content).join('\n') === text)?.files.map(f => f.path).join(', ') ?? 'main.R';
 };
 const runEditor = (then?: () => void) => void analyze(editorTarget(), async() => editorFiles(), { kind: 'code' }, then);
 
@@ -1019,11 +1025,11 @@ const codeView: EditorView = rEditor($('code'), Examples[0].files[0].content, ()
 		liveTimer = window.setTimeout(runEditor, 600);
 	}
 }, runEditor);
-/* the examples, one per tier, in a menu: the badge it gets and what the code does */
+/* the examples, one per tier, in their own tab: the badge it gets and what the code does */
 function markExample(): void {
 	const text = codeView.state.doc.toString();
 	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
-	$('examples-label').textContent = ex ? `Example: ${ex.label}` : 'Load an example';
+	$('code-name').textContent = ex ? ex.files.map(f => f.path).join(', ') : 'main.R';
 	for(const b of $('examples').children) {
 		b.setAttribute('aria-current', String((b as HTMLElement).dataset.label === ex?.label));
 	}
@@ -1039,7 +1045,7 @@ for(const ex of Examples) {
 	b.append(img, el('span', '', `${sentence(ex.title)}.`), el('span', 'sr', ex.label));
 	b.addEventListener('click', () => {
 		setText(codeView, ex.files.map(f => f.content).join('\n'));
-		($('examples-menu') as HTMLDetailsElement).open = false;
+		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
 		markExample();
 	});
 	$('examples').append(b);
@@ -1375,6 +1381,9 @@ function openState(box: HTMLElement): () => void {
  */
 function render(r: Report, files: readonly SourceFile[], incremental = false): void {
 	$('result').hidden = false;
+	if(!incremental) {
+		$('code-block').hidden = true;
+	}
 	const pending = r.pending ?? [];
 	$('result').classList.toggle('partial', pending.length > 0);
 	const restore = incremental ? [openState($('downloads')), openState($('lint'))] : [];
@@ -1390,7 +1399,8 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	const sofar = pending.length > 0 ? [el('em', 'provisional', 'so far')] : [];
 	/* the badge names the tier; next to it, in a line, what the tier means */
 	const spec = policy?.tiers.find(t => t.name === r.tier.tier);
-	const meaning = spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits. Review each finding yourself.' : '');
+	const lowest = policy?.tiers.at(-1)?.name;
+	const meaning = spec?.summary ?? (!r.analyzed ? 'flowR could not analyze the code, so it meets no tier.' : `Does not meet ${lowest ?? 'any tier'}. Review every finding.`);
 	$('verdict-title').replaceChildren(el('span', 'sr', r.tier.tier), document.createTextNode(meaning), ...sofar, el('small', 'target', r.target));
 	const note = $('verdict-pending');
 	note.hidden = pending.length === 0;
@@ -1983,8 +1993,8 @@ function renderCode(r: Report, files: readonly SourceFile[], incremental = false
 		if(quiet) {
 			return;
 		}
-		/* the code is folded until a finding or result is picked */
-		($('code-block') as HTMLDetailsElement).open = true;
+		/* the code shows only once a finding or result is picked */
+		$('code-block').hidden = false;
 		view.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 		const target = loc ? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"] .src > span[class^="m-"]`) ?? view.querySelector<HTMLElement>(`[data-line="${loc[0]}"]`) : null;
 		if(target) {
@@ -2234,8 +2244,8 @@ function renderLint(r: Report, incremental = false): void {
 	const clean = r.lint.filter(l => !l.error && l.count === 0);
 	const hits = r.lint.length - clean.length;
 	$('lint-count').textContent = pending.length > 0
-		? `${r.lint.length} of ${r.lint.length + pending.length} done, ${hits} report something`
-		: `${hits} of ${r.lint.length} report something`;
+		? `${r.lint.length} of ${plural(r.lint.length + pending.length, 'rule')} done`
+		: `${plural(r.lint.length, 'rule')}${hits > 0 ? `, ${hits} found something` : ''}`;
 	const fixes = allFixes(r);
 	const bar = el('div', 'fixes-bar');
 	if(fixes.count > 1) {
@@ -2334,7 +2344,7 @@ function drawTierTable(): void {
 	}
 	const p = policy;
 	const all = [...p.tiers.map(t => ({ ...t, fallback: false })),
-		{ name: p.fallbackTier.name, color: p.fallbackTier.color, review: p.fallbackTier.review, summary: 'Fits no tier above, or flowR could not analyze the code.', description: undefined, forbid: [], lint: [] as readonly string[], fallback: true }];
+		{ name: p.fallbackTier.name, color: p.fallbackTier.color, review: p.fallbackTier.review, summary: 'Meets none of the tiers above, or flowR could not analyze the code.', description: undefined, forbid: [], lint: [] as readonly string[], fallback: true }];
 	/* one line per tier, the details unfold on demand */
 	$('tier-table').replaceChildren(...all.map(t => {
 		const li = el('li');

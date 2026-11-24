@@ -137,7 +137,7 @@ describe('what the page reads', () => {
 		test('a badger link to a badger or playground link reads the inner code; a link of links ends', async() => {
 			const code = Buffer.from(deflateSync(strToU8('system(readline())'))).toString('base64url');
 			const inner = `https://x.org/badger/#z=${code}`;
-			expect(await fromUrl(`https://x.org/badger/#url=${encodeURIComponent(inner)}`)).toEqual([{ path: 'script.R', content: 'system(readline())' }]);
+			expect(await fromUrl(`https://x.org/badger/#url=${encodeURIComponent(inner)}`)).toEqual([{ path: 'main.R', content: 'system(readline())' }]);
 			const pg = Playground.link({ code: 'eval(1)', name: 'a.R' });
 			expect(await fromUrl(`https://x.org/badger/#url=${encodeURIComponent(pg)}`)).toEqual([{ path: 'a.R', content: 'eval(1)' }]);
 			let deep = inner;
