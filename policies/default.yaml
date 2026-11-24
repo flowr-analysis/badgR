@@ -62,6 +62,8 @@ capabilities:
       - '^(system|system2|shell|shell\.exec|pipe)$'
       - '^(processx|callr|sys)::'
     tags: [process]
+    # a value quoted for the shell is one argument, whoever wrote it (gsub and the like on the quoted value undo that)
+    sanitizers: [shQuote]
   environment:
     class: severe
     description: changes environment variables, which decide what later commands run (PATH, LD_PRELOAD)
@@ -106,10 +108,23 @@ capabilities:
     withArgument:
       file: ['^(cat|capture\.output|dput)$']
     tags: [network]
-  output:
+  # a value escaped for its language is one value there, whoever wrote it (as flowR's unescaped-arguments linter sees it)
+  database:
     class: other
-    description: emits HTML or JavaScript, or queries a database
-    tags: [html, javascript, database]
+    description: queries a database
+    tags: [database]
+    # the template of sqlInterpolate and glue_sql is still code: its values count as they are
+    sanitizers: ['DBI::dbQuoteLiteral', 'DBI::dbQuoteString', 'DBI::dbQuoteIdentifier', 'DBI::sqlInterpolate', 'glue::glue_sql', 'glue::glue_data_sql']
+  html:
+    class: other
+    description: emits HTML
+    tags: [html]
+    sanitizers: ['htmltools::htmlEscape', 'xfun::html_escape', 'utils::URLencode']
+  javascript:
+    class: other
+    description: emits JavaScript
+    tags: [javascript]
+    sanitizers: ['jsonlite::toJSON', 'jsonlite::serializeJSON', 'RJSONIO::toJSON', 'rjson::toJSON']
 
 # package functions whose internal sinks do not count (Shiny evaluates the author's code)
 trusted:

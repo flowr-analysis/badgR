@@ -12,6 +12,7 @@ import { ArgProp, CallProp } from '@eagleoutice/flowr/dataflow/environments/buil
 import type { BuiltInIndex } from '@eagleoutice/flowr/dataflow/environments/query-fn-props';
 import { NodeId } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/processing/node-id';
 import { DfEdge, EdgeType } from '@eagleoutice/flowr/dataflow/graph/edge';
+import { EmptyArgument } from '@eagleoutice/flowr/r-bridge/lang-4.x/ast/model/nodes/r-function-call';
 import type { FlowrAnalyzer } from '@eagleoutice/flowr/project/flowr-analyzer';
 import { type CapabilitySpec, type FileRoleName, type Policy, FileRoles, lintRulesOf } from './policy-core';
 import type { FileRole } from '@eagleoutice/flowr/project/context/flowr-file';
@@ -1165,10 +1166,36 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 
 	/* where the values of the candidate calls come from, in batches, so progress can tell how far the tracing is */
 	const sources = new Map<NodeId, InputSource[]>();
+	type Criterion = ReturnType<typeof SlicingCriterion.fromId>;
+	/*
+	 * the value sources of criteria, each traced for the call it belongs to: with the sanitizers of that call's
+	 * capability (shQuote for a shell command), so a quoted value counts as written in the code there and only there
+	 */
+	const sanitizersOf = new Map(candidates.map(c => [c.id, c.cap.spec.sanitizers ?? []]));
+	const trace = async(items: readonly { owner: NodeId, crit: Criterion }[], what: string): Promise<(owner: NodeId, crit: Criterion) => InputSource[] | undefined> => {
+		const groups = new Map<string, { sanitizers: readonly string[], crit: Set<Criterion> }>();
+		for(const { owner, crit } of items) {
+			const sanitizers = sanitizersOf.get(owner) ?? [];
+			const key = sanitizers.join('\0');
+			const g = groups.get(key) ?? { sanitizers, crit: new Set<Criterion>() };
+			g.crit.add(crit);
+			groups.set(key, g);
+		}
+		const out = new Map<string, Record<string, InputSource[]>>();
+		for(const [key, { sanitizers, crit }] of groups) {
+			const criterion = [...crit];
+			const request = { type: 'input-sources' as const, criterion, ...sanitizers.length > 0 ? { config: { sanitizers: [...sanitizers] } } : {} };
+			t0 = Date.now();
+			const res = await analyzer.query([request]);
+			queries.push({ type: 'input-sources', request, ms: Date.now() - t0, result: `the value sources of ${criterion.length} ${what}${sanitizers.length > 0 ? `, with ${sanitizers.join(', ')} as escaping` : ''}` });
+			out.set(key, (res['input-sources'] as { results: Record<string, InputSource[]> }).results);
+		}
+		return (owner, crit) => out.get((sanitizersOf.get(owner) ?? []).join('\0'))?.[crit];
+	};
 	if(candidates.length > 0) {
 		/* a call's own vertex, and for a call flowR could not resolve, the vertices its callee reads */
 		const owner: NodeId[] = [];
-		const crit: ReturnType<typeof SlicingCriterion.fromId>[] = [];
+		const crit: Criterion[] = [];
 		for(const c of candidates) {
 			for(const t of [c.id, ...c.trace ?? []]) {
 				owner.push(c.id);
@@ -1182,15 +1209,13 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		const tracing = Date.now();
 		for(let at = 0; at < crit.length;) {
 			const part = crit.slice(at, at + batch);
-			t0 = Date.now();
-			const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
-			const ms = Date.now() - t0;
-			queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms, result: `the value sources of ${part.length} call(s)` });
-			const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+			const started = Date.now();
+			const results = await trace(part.map((c, i) => ({ owner: owner[at + i], crit: c })), 'call(s)');
+			const ms = Date.now() - started;
 			/* a call flowR returned nothing for has values of unknown source, not none */
 			part.forEach((c, i) => {
 				const o = owner[at + i];
-				sources.set(o, [...sources.get(o) ?? [], ...results[c] ?? [{ id: o, types: ['unknown'] }]]);
+				sources.set(o, [...sources.get(o) ?? [], ...results(o, c) ?? [{ id: o, types: ['unknown'] }]]);
 			});
 			at += part.length;
 			const own = (Date.now() - tracing) / at * (crit.length - at);
@@ -1207,14 +1232,65 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 		/* the values a lambda is handed, for its calls whose values are parameters or of unknown source */
 		{
 			const want = candidates.filter(c => c.late !== undefined && c.late.length > 0 && (c.lateAlways === true || (sources.get(c.id) ?? []).some(x => x.types.some(t => t === 'param' || t === 'unknown' || t === 'scope'))));
-			const part = [...new Set(want.flatMap(c => c.late ?? []))].map(t => SlicingCriterion.fromId(t));
+			const part = want.flatMap(c => (c.late ?? []).map(t => ({ owner: c.id, crit: SlicingCriterion.fromId(t) })));
 			if(part.length > 0) {
-				t0 = Date.now();
-				const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
-				queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms: Date.now() - t0, result: `the value sources of ${part.length} value(s) handed to anonymous functions` });
-				const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+				const results = await trace(part, 'value(s) handed to anonymous functions');
 				for(const c of want) {
-					sources.set(c.id, [...sources.get(c.id) ?? [], ...(c.late ?? []).flatMap(t => results[SlicingCriterion.fromId(t)] ?? [{ id: t, types: ['unknown'] }])]);
+					sources.set(c.id, [...sources.get(c.id) ?? [], ...(c.late ?? []).flatMap(t => results(c.id, SlicingCriterion.fromId(t)) ?? [{ id: t, types: ['unknown'] }])]);
+				}
+			}
+		}
+		/*
+		 * a database connection (`con <- DBI::dbConnect(RSQLite::SQLite(), path)`) is what flowR calls a file read, as it
+		 * opens one; handed to a call, it is only a handle, chosen by the arguments of the call that opened it: those count
+		 * (what a query reads through it is the query's own value)
+		 */
+		{
+			const openingCall = (id: NodeId): NodeId[] | undefined => {
+				const v = df.graph.getVertex(id);
+				if(v?.tag !== VertexType.FunctionCall) {
+					return undefined;
+				}
+				const { name, ns } = callName(id);
+				const tags = tagsOf(name, ns);
+				/* the sources of a call are those of its arguments */
+				return tags.includes('opens-handle') && tags.includes('database') ? [id] : undefined;
+			};
+			/* the call itself, or the variable (`con`) every definition of which is such a call */
+			const opens = (id: NodeId): NodeId[] | undefined => {
+				const v = df.graph.getVertex(id);
+				const reads = (x: NodeId) => [...df.graph.outgoingEdges(x) ?? []].filter(([t, e]) => DfEdge.includesType(e, EdgeType.Reads) && !NodeId.isBuiltIn(t)).map(([t]) => t);
+				const read = v?.tag === VertexType.Use ? reads(id) : [];
+				/* a call that was handed the same connection (`dbQuoteLiteral(con, x)`) is the last to use it, not where it comes from */
+				const vars = new Set(read.filter(t => df.graph.getVertex(t)?.tag === VertexType.VariableDefinition));
+				const handedSame = (t: NodeId) => {
+					const c = df.graph.getVertex(t);
+					return c?.tag === VertexType.FunctionCall && c.args.some(a => {
+						const r = a === EmptyArgument ? undefined : a.nodeId;
+						return r !== undefined && reads(r).some(x => vars.has(x));
+					});
+				};
+				const defs = v?.tag === VertexType.Use ? read.filter(t => !handedSame(t)).flatMap(t => definersOf(t)) : definersOf(id);
+				const args = defs.map(d => d === undefined ? undefined : openingCall(d.id));
+				return args.length > 0 && args.every(a => a !== undefined) ? args.flat() as NodeId[] : undefined;
+			};
+			const handles = new Map<NodeId, NodeId[]>();
+			for(const list of sources.values()) {
+				for(const src of list) {
+					const args = src.types.includes('file') && !handles.has(src.id) ? opens(src.id) : undefined;
+					if(args !== undefined) {
+						handles.set(src.id, args);
+					}
+				}
+			}
+			if(handles.size > 0) {
+				const part = [...sources].flatMap(([o, list]) => list.flatMap(src => (handles.get(src.id) ?? []).map(t => ({ owner: o, crit: SlicingCriterion.fromId(t) }))));
+				const results = part.length === 0 ? undefined : await trace(part, 'call(s) that open a database connection');
+				for(const [o, list] of sources) {
+					sources.set(o, list.flatMap(src => {
+						const args = handles.get(src.id);
+						return args === undefined ? [src] : args.flatMap(t => results?.(o, SlicingCriterion.fromId(t)) ?? [{ id: t, types: ['unknown'] }]);
+					}));
 				}
 			}
 		}
@@ -1337,13 +1413,10 @@ export async function analyzeWith(analyzer: FlowrAnalyzer, policy: Policy, calle
 			if(want.size === 0) {
 				break;
 			}
-			const part = [...new Set([...want.values()].flat())].map(t => SlicingCriterion.fromId(t));
-			t0 = Date.now();
-			const res = await analyzer.query([{ type: 'input-sources', criterion: part }]);
-			queries.push({ type: 'input-sources', request: { type: 'input-sources', criterion: part }, ms: Date.now() - t0, result: `the value sources of ${part.length} definition(s) that closures read` });
-			const results = (res['input-sources'] as { results: Record<string, InputSource[]> }).results;
+			const part = [...sources].flatMap(([o, list]) => list.flatMap(src => (want.get(src.id) ?? []).map(t => ({ owner: o, crit: SlicingCriterion.fromId(t) }))));
+			const results = await trace(part, 'definition(s) that closures read');
 			for(const [o, list] of sources) {
-				const more = list.flatMap(src => (want.get(src.id) ?? []).flatMap(t => results[SlicingCriterion.fromId(t)] ?? [{ id: t, types: ['unknown'] }]));
+				const more = list.flatMap(src => (want.get(src.id) ?? []).flatMap(t => results(o, SlicingCriterion.fromId(t)) ?? [{ id: t, types: ['unknown'] }]));
 				if(more.length > 0) {
 					sources.set(o, [...list, ...more]);
 				}

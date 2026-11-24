@@ -16,6 +16,8 @@ export interface CapabilitySpec {
 	readonly dynamic?:         boolean
 	/** a call whose values all come from these origin classes is no finding, e.g. `library(shiny)` for a capability of computed package names */
 	readonly unlessOrigins?: readonly string[]
+	/** functions whose result counts as written in the code when it reaches these calls, whatever flows in: `shQuote` for a shell command */
+	readonly sanitizers?: readonly string[]
 	/** functions (regexes, as in `functions`) that have the capability only when given an argument of this name, e.g. `file` of `cat()` */
 	readonly withArgument?: Readonly<Record<string, readonly string[]>>
 }
@@ -198,7 +200,8 @@ export function parsePolicy(text: string, file: string, hash: string): Policy {
 			unlessArgProps:  strings(file, `${where}.unlessArgProps`, c?.unlessArgProps),
 			dynamic:         c?.dynamic === undefined ? undefined : bool(file, `${where}.dynamic`, c.dynamic),
 			unlessOrigins:   c?.unlessOrigins === undefined ? undefined : strings(file, `${where}.unlessOrigins`, c.unlessOrigins),
-			withArgument:    withArgument(file, `${where}.withArgument`, c?.withArgument)
+			withArgument:    withArgument(file, `${where}.withArgument`, c?.withArgument),
+			sanitizers:      c?.sanitizers === undefined ? undefined : strings(file, `${where}.sanitizers`, c.sanitizers)
 		};
 		for(const o of spec.unlessOrigins ?? []) {
 			if(!Object.hasOwn(origins, o)) {

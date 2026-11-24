@@ -126,7 +126,11 @@ describe('counterexamples', () => {
 		['browseURL("http://example.com")', 'silver', 'process-control'],
 		['file.edit("x")', 'silver', 'process-control'],
 		['tools::Rcmd("INSTALL x")', 'silver', 'process-control'],
-		['tools::pskill(1)', 'silver', 'process-control']
+		['tools::pskill(1)', 'silver', 'process-control'],
+		/* shQuote escapes for the shell only, and gsub on the quoted value undoes it */
+		['x <- readline(); eval(parse(text = shQuote(x)))', 'none', 'code-execution'],
+		['x <- readline(); system(paste("ls", gsub("a", "b", shQuote(x))))', 'none', 'shell'],
+		['x <- readline(); system(paste("ls", shQuote(x))); eval(parse(text = shQuote(x)))', 'none', 'code-execution']
 	] as const)('%s', async(code, best, capability) => {
 		const r = await run(code);
 		expect(r.analyzed).toBe(true);
@@ -172,6 +176,42 @@ describe('counterexamples', () => {
 	])('harmless code stays gold: %s', async code => {
 		const r = await run(code);
 		expect(r.tier.tier).toBe('gold');
+	}, 120_000);
+
+	test('a value quoted with shQuote counts as written in the code in a shell command', async() => {
+		const r = await run('x <- readline()\nsystem(paste("ls", shQuote(x)))');
+		expect(r.tier.tier).toBe('silver');
+		expect(r.findings.find(f => f.capability === 'shell')?.origins).toEqual(['author']);
+	}, 120_000);
+
+	test.each([
+		/* [code, whether the query gets a value from outside] */
+		['DBI::dbGetQuery(con, paste("SELECT * FROM t WHERE a =", DBI::dbQuoteLiteral(con, x)))', false],
+		['DBI::dbGetQuery(con, paste("SELECT * FROM t WHERE a =", x))', true],
+		/* the template of sqlInterpolate is still code */
+		['DBI::dbGetQuery(con, DBI::sqlInterpolate(con, x, a = 1))', true]
+	] as const)('a value escaped for SQL counts as written in the code in a query: %s', async(query, outside) => {
+		const r = await run(`con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")\nx <- readline()\n${query}`);
+		expect(r.findings.find(f => f.call.endsWith('dbGetQuery'))?.origins.includes('outside')).toBe(outside);
+		expect(r.tier.tier).toBe(outside ? 'silver' : 'gold');
+	}, 120_000);
+
+	test('a database connection counts by who chose it, not as a file read', async() => {
+		const mine = await run('con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")\nDBI::dbGetQuery(con, "SELECT 1")');
+		expect(mine.findings.find(f => f.call.endsWith('dbGetQuery'))?.origins).not.toContain('outside');
+		expect(mine.tier.tier).toBe('gold');
+		const theirs = await run('con <- DBI::dbConnect(RSQLite::SQLite(), readline())\nDBI::dbGetQuery(con, "SELECT 1")');
+		expect(theirs.findings.find(f => f.call.endsWith('dbGetQuery'))?.origins).toContain('outside');
+		/* a connection one branch opens with a user path, used by a call before the query */
+		const maybe = await run('con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")\nif (runif(1) > 0.5) con <- DBI::dbConnect(RSQLite::SQLite(), readline())\nDBI::dbGetQuery(con, paste("SELECT", DBI::dbQuoteLiteral(con, "a")))');
+		expect(maybe.findings.find(f => f.call.endsWith('dbGetQuery'))?.origins).toContain('outside');
+	}, 120_000);
+
+	test.each([
+		['shiny::HTML(paste("<b>", htmltools::htmlEscape(readline()), "</b>"))', 'gold'],
+		['shiny::HTML(paste("<b>", readline(), "</b>"))', 'silver']
+	] as const)('a value escaped for HTML counts as written in the code in HTML: %s', async(code, tier) => {
+		expect((await run(code)).tier.tier).toBe(tier);
 	}, 120_000);
 
 	test('rlang\'s argument checks inside Shiny inputs are no code execution', async() => {

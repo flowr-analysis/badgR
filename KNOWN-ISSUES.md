@@ -67,5 +67,11 @@ that would replace badger's workarounds are planned in `r1-opus/FLOWR-PLAN.md`.
 - A callee resolved on one path but computed on another (`f <- if (c) function() 1 else get(x)`) is a dynamic call.
 - `knitr::knit(user)`, `rmarkdown::render(user)` were bronze: rendering is `code-download` now (none with a user path).
 - `cat(x, file = path)`, `capture.output(file =)`, `dput(file =)` are `network-file` (new policy key `withArgument`).
+- `system(paste("ls", shQuote(x)))` with a user `x` was none: a value quoted with `shQuote` counts as written in the code in
+  shell calls (new policy key `sanitizers`), not in other calls, and not after `gsub` and the like on the quoted value.
+  The same holds for SQL (`DBI::dbQuoteLiteral`, ...), HTML (`htmltools::htmlEscape`, ...), and JavaScript (`jsonlite::toJSON`, ...),
+  with the escaping functions of flowR's unescaped-arguments linter; `output` is split into `database`, `html`, and `javascript`.
+- A database connection was a file read (flowR tags `dbConnect` so): handed to a query, it now counts by the arguments of `dbConnect`. Drivers (`RSQLite::SQLite()`) are pure
+  since flowR 2.17.12, so a constant query on a constant database is gold.
 - False positives fixed: `C$new()$add(2)` for R6 and RefClass generators, `Vectorize(function(x, y) x + y)`, `Negate(is.null)`,
   `setClass(...)` (flowR's synthetic `S7::S7_dispatch` calls), function factories (`compose(f, g)`), `shiny::debounce`.

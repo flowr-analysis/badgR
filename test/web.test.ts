@@ -488,6 +488,9 @@ describe('the playground', () => {
 		const fix = page.locator('#lint .fix button', { hasText: 'apply' }).first();
 		await fix.click();
 		await page.locator('#code .cm-content', { hasText: 'shQuote(x)' }).waitFor({ timeout: 5_000 });
+		/* the policy counts a value quoted for the shell as written in the code */
+		await page.locator('#verdict-title span', { hasText: /^\s*silver\s*$/ }).waitFor({ state: 'attached', timeout: 120_000 });
+		expect(await tierOf(page)).toBe('silver');
 		expect(await page.locator('#lint a.rule', { hasText: 'unescaped-arguments' }).getAttribute('href')).toContain('Unescaped-Arguments');
 		expect(errors).toEqual([]);
 		await page.close();

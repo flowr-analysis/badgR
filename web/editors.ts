@@ -56,7 +56,7 @@ export function rEditor(parent: HTMLElement, doc: string, onChange: (text: strin
 /* ---------------------------------------------------------------- policy completion */
 
 const TopKeys = ['name', 'version', 'description', 'origins', 'fallbackOrigin', 'capabilities', 'trusted', 'allow', 'shipped', 'report', 'lintTimeout', 'lintReadTimeout', 'timeout', 'tiers', 'fallbackTier'];
-const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps', 'unlessOrigins', 'dynamic', 'withArgument'];
+const CapabilityKeys = ['class', 'description', 'tags', 'callProps', 'functions', 'exclude', 'unlessCallProps', 'unlessArgProps', 'unlessOrigins', 'dynamic', 'withArgument', 'sanitizers'];
 const TierKeys = ['name', 'color', 'summary', 'review', 'description', 'forbid', 'lint'];
 const RuleKeys = ['classes', 'capabilities', 'origins', 'via', 'files', 'reason'];
 const Docs: Record<string, string> = {
@@ -75,6 +75,7 @@ const Docs: Record<string, string> = {
 	fallbackTier: 'the tier of code that meets no tier, or that flowR could not analyze',
 	unlessOrigins: 'a call whose values all come from these origin classes does not count',
 	withArgument: 'calls that count only when they get this argument, e.g. file: [cat] for cat(x, file = path); argument name to function regexes',
+	sanitizers: 'functions whose result counts as written in the code in these calls, e.g. shQuote for shell commands',
 	dynamic: 'true: the capability of calls the analysis cannot resolve to a function (one capability at most)'
 };
 
