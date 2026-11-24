@@ -4,7 +4,7 @@ import { type BadgeMarks, badgeSvg, badgeTitle, yamlShape } from '../src/badge';
 import { findingAt, lintAt, parseAt, sarifLog } from '../src/sarif';
 import type { FlowrQueryRecord, Progress, Report } from '../src/core';
 import { type Finding, type LintResult, type QuickFix, assignTier } from '../src/tiers';
-import { type FileRoleName, type Policy, FileRoles, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
+import { type FileRoleName, type Policy, parsePolicy, PolicyError, lintRulesOf } from '../src/policy-core';
 import { markdownReport } from '../src/report';
 import { ReviewLabel, ReviewStates, findingKey, reviewCounts, reviewFile, reviewSummary, parseReview, type ReviewEntry, type ReviewState } from '../src/review';
 import type { PolicyVocabulary, SourceFile, WorkerRequest, WorkerResponse } from './protocol';
@@ -1312,8 +1312,8 @@ function reviewBox(f: Finding): HTMLElement {
 	return box;
 }
 /** how the findings table was grouped and unfolded, kept while the same report is redrawn */
-const view: { target?: string, count?: number, groupBy: 'capability' | 'call' | 'file' | 'none', expanded: Set<string>, full: Set<string>, active: Set<string> } =
-	{ groupBy: 'none', expanded: new Set(), full: new Set(), active: new Set() };
+const view: { target?: string, count?: number, groupBy: 'capability' | 'call' | 'file' | 'none', expanded: Set<string>, full: Set<string> } =
+	{ groupBy: 'none', expanded: new Set(), full: new Set() };
 
 let selectFinding: (f: Finding, quiet?: boolean) => void = () => {};
 let revealFinding: (f: Finding) => void = () => {};
@@ -1371,22 +1371,18 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		return chip;
 	};
 	const stats = el('div', 'stats');
-	const filterBy = (key: string) => () => {
-		const b = $('filters').querySelector<HTMLButtonElement>(`button[data-key="${key}"]`);
-		b?.click();
-		$('findings').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-	};
+	const toFindings = () => $('findings').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 	if(!r.analyzed) {
 		stats.append(stat('not analyzed', 'bad', r.error ?? 'flowR could not analyze the code'));
 	} else {
 		stats.append(stat(plural(r.findings.length, 'risky call'), r.findings.length ? '' : 'ok', 'calls that can do something the policy watches, such as run commands or use the network'));
 		for(const c of [...new Set(r.findings.map(f => f.class))]) {
 			const n = r.findings.filter(f => f.class === c).length;
-			stats.append(stat(`${n} ${cw(c)}`, `c-${c}`, `${sentence(ClassLong[c])}. Click to filter.`, filterBy(`class:${c}`)));
+			stats.append(stat(`${n} ${cw(c)}`, `c-${c}`, `${sentence(ClassLong[c])}. Click to see them.`, toFindings));
 		}
 		const outside = r.findings.filter(f => f.origins.includes('outside')).length;
 		if(outside > 0) {
-			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'these calls get values from users, files, or the network. Click to filter.', filterBy('origin:outside')));
+			stats.append(stat(`${outside} with values from outside`, 'c-outside', 'these calls get values from users, files, or the network. Click to see them.', toFindings));
 		}
 		const hits = r.lint.filter(l => l.count > 0);
 		const n = hits.reduce((s2, l) => s2 + l.count, 0);
@@ -1405,8 +1401,8 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 		const done = r.findings.length - c.unreviewed;
 		stats.append(stat(done === 0 ? 'none reviewed' : `${done} of ${r.findings.length} reviewed`, c.unreviewed === 0 ? 'ok' : 'c-review',
 			done === 0 ? 'mark findings as tolerated, false positive, or to fix, in the table or in the details of a finding. The tier stays the same.'
-				: `${c.tolerated} tolerated, ${c['false-positive']} false positives, ${c['to-fix']} to fix. Click to show the rest.`,
-			filterBy('review:unreviewed')));
+				: `${c.tolerated} tolerated, ${c['false-positive']} false positives, ${c['to-fix']} to fix. Click to see them.`,
+			toFindings));
 	}
 	summary.append(stats);
 
@@ -1513,43 +1509,18 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	drawn = { files, target: r.target, findings: findingIds(r), lintResults };
 }
 
+/** from this many findings on, the table offers groups */
+const ManyFindings = 30;
+
 /** the findings table, which only changes with the findings */
 function renderFindings(r: Report): void {
-	/* findings with filters; the filters, groups, and folds stay while the same report is drawn again */
+	/* the findings, the most telling first; the groups and folds stay while the same report is drawn again */
 	if(view.target !== r.target || view.count !== r.findings.length) {
-		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > 8 ? 'capability' : 'none', expanded: new Set(), full: new Set(), active: new Set() });
+		Object.assign(view, { target: r.target, count: r.findings.length, groupBy: r.findings.length > ManyFindings ? 'capability' : 'none', expanded: new Set(), full: new Set() });
 	}
-	const active = view.active;
-	const matches = (f: Finding) => [...active].every(a => {
-		const [kind, value] = a.split(':');
-		return kind === 'class' ? f.class === value : kind === 'via' ? f.via === value : kind === 'review' ? reviewOf(f) === undefined : kind === 'role' ? roleOfFinding(f) === value : f.origins.includes(value);
-	});
-	let shown = r.findings.filter(matches);
+	const shown = r.findings;
 	const filters = $('filters');
 	filters.replaceChildren();
-	const origins = [...new Set(r.findings.flatMap(f => f.origins))];
-	const roleKeys = FileRoles.filter(x => r.findings.some(f => roleOfFinding(f) === x)).map(x => `role:${x}`);
-	const keys = [...roleKeys.length > 1 ? roleKeys : [], ...new Set(r.findings.map(f => `class:${f.class}`)), ...new Set(r.findings.map(f => `via:${f.via}`)), ...origins.map(o => `origin:${o}`), 'review:unreviewed'];
-	for(const k of [...active].filter(k => !keys.includes(k))) {
-		active.delete(k);
-	}
-	shown = r.findings.filter(matches);
-	for(const k of keys) {
-		const [kind, value] = k.split(':');
-		const b = el('button', 'chip', kind === 'class' ? `${cw(value)} calls` : kind === 'via' ? (value === 'package' ? 'inside packages' : 'in the app') : kind === 'review' ? 'not reviewed yet' : kind === 'role' ? `in ${RoleWord[value as FileRoleName]}` : `values from ${ow(value)}`);
-		b.type = 'button';
-		b.dataset.key = k;
-		b.setAttribute('aria-pressed', String(active.has(k)));
-		b.addEventListener('click', () => {
-			if(!active.delete(k)) {
-				active.add(k);
-			}
-			b.setAttribute('aria-pressed', String(active.has(k)));
-			shown = r.findings.filter(matches);
-			drawFindings();
-		});
-		filters.append(b);
-	}
 	const table = $('findings');
 	/*
 	 * Many findings come in groups: by capability, by called function, or by file. A group is one line that
@@ -1607,8 +1578,9 @@ function renderFindings(r: Report): void {
 	};
 	const drawFindings = () => {
 		$('more-findings').hidden = true;
-		$('finding-count').textContent = r.findings.length > 0 ? `${shown.length} of ${r.findings.length}` : '';
-		grouping.hidden = r.findings.length < 3;
+		$('finding-count').textContent = r.findings.length > 0 ? String(r.findings.length) : '';
+		/* a small table needs no groups */
+		filters.hidden = r.findings.length <= ManyFindings;
 		groupButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(['capability', 'call', 'file', 'none'][i] === groupBy)));
 		/* nothing to filter, group, or review: the summary already says there are no risky calls */
 		$('findings-block').hidden = r.findings.length === 0;
