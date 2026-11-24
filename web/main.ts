@@ -1352,14 +1352,10 @@ function render(r: Report, files: readonly SourceFile[], incremental = false): v
 	$('badge').replaceChildren(img);
 	/* while linting rules run, the tier is the best the code can still get */
 	const sofar = pending.length > 0 ? [el('em', 'provisional', 'so far')] : [];
-	$('verdict-title').replaceChildren(
-		...(r.tier.tier === 'none' ? [document.createTextNode('No tier '), el('span', 'sr', 'none')] : [el('span', `tier-word ${TierColor[r.tier.tier] ?? ''}`, r.tier.tier), document.createTextNode(' tier')]),
-		...sofar, el('small', 'target', r.target));
-	/* the one line that says what the assigned tier means */
+	/* the badge names the tier; next to it, in a line, what the tier means */
 	const spec = policy?.tiers.find(t => t.name === r.tier.tier);
-	const req = el('p', `requirement ${TierColor[r.tier.tier] ?? 't-none'}`, spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits. Review each finding yourself.' : ''));
-	$('verdict-req').replaceWith(req);
-	req.id = 'verdict-req';
+	const meaning = spec?.summary ?? (r.tier.tier === policy?.fallbackTier.name ? 'No tier fits. Review each finding yourself.' : '');
+	$('verdict-title').replaceChildren(el('span', 'sr', r.tier.tier), document.createTextNode(meaning), ...sofar, el('small', 'target', r.target));
 	const note = $('verdict-pending');
 	note.hidden = pending.length === 0;
 	note.textContent = pending.length === 0 ? '' : `${plural(pending.length, 'linting rule')} still running. ${r.tier.tier === policy?.fallbackTier.name ? 'Their results show up below as they come in.' : 'If one reports something, the tier can still drop.'}`;

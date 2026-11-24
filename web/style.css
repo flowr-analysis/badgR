@@ -243,7 +243,6 @@ input[type="url"], #url-input { flex: 1; min-width: 0; padding: 5px 8px; border:
 .verdict-badge { padding-top: 6px; }
 .verdict-badge img { height: 30px; display: block; }
 .verdict h2 { font-size: 21px; font-weight: 650; }
-.tier-word { text-transform: capitalize; }
 .target { display: inline; margin-left: 10px; font-size: 13px; font-weight: 400; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
 .summary { margin: 2px 0 4px; }
 .meta { margin: 4px 0 0; font: 11.5px var(--mono); color: var(--muted); }
@@ -520,6 +519,8 @@ body.busy #result:not(.partial), body.busy #empty { opacity: .45; transition: op
 /* ---------------------------------------------------------------- the verdict, in a fixed order */
 .verdict { display: block; padding: var(--s2) 0 var(--s5); border-bottom: 1px solid var(--line); }
 .verdict-head { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; }
+#verdict-title { flex: 1 1 260px; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; }
+#verdict-title .target { display: block; margin: 2px 0 0; }
 .verdict-badge img { height: 26px; display: block; }
 .verdict h2 { font-size: 22px; font-weight: 650; line-height: 1.2; }
 .target { display: inline-block; margin-left: var(--s2); font: 400 13px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
@@ -556,8 +557,6 @@ details.all > summary { cursor: pointer; color: var(--accent); }
 .rv-b { color: var(--muted); border-color: color-mix(in srgb, var(--muted) 45%, transparent); }
 
 /* each tier's requirement, in one line wherever the tier is named */
-.requirement { margin: var(--s3) 0 0; padding-left: var(--s3); border-left: 3px solid currentColor; font-size: 15px; font-weight: 600; line-height: 1.4; }
-.requirement:empty { display: none; }
 .ladder .tier-req { display: block; margin: 2px 0 0 1.3em; font-size: 12.5px; color: var(--ink); font-weight: 500; }
 .ladder .tier-line { display: block; }
 .tier-more > summary span { font-weight: 600; }
