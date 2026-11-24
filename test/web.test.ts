@@ -305,9 +305,24 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
+	test('live analysis is on by default: an edit analyzes again', async() => {
+		const { page, errors } = await open();
+		expect(await page.locator('#live').getAttribute('aria-pressed')).toBe('true');
+		await pickExample(page, 'bronze');
+		expect(await tierOf(page)).toBe('bronze');
+		await setCode(page, 'x <- readline()\nsystem(x)\n');
+		await page.locator('#verdict-title', { hasText: 'pasted code' }).waitFor({ timeout: 120_000 });
+		expect(await tierOf(page)).toBe('none');
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
 	test('switching examples does not run the analysis again, it shows the earlier result', async() => {
 		const { page, errors } = await open();
 		await page.click('[data-tab="paste"]');
+		/* without live analysis, which would analyze each example as it loads */
+		await page.click('#live');
+		expect(await page.locator('#live').getAttribute('aria-pressed')).toBe('false');
 		await pickExample(page, 'none');
 		await page.click('#analyze-code');
 		expect(await tierOf(page)).toBe('none');

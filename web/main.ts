@@ -926,10 +926,28 @@ $('url-form').addEventListener('submit', ev => {
 
 /* the editor: an example only loads its code (and its result, if analyzed before); Analyze or live mode runs */
 const liveButton = $<HTMLButtonElement>('live');
+function setLive(on: boolean): void {
+	liveButton.setAttribute('aria-pressed', String(on));
+	liveButton.title = on ? 'live: analyze again after each edit (click to turn off)' : 'analyze only on Analyze (click to analyze after each edit)';
+}
+/* live is the default; turning it off is kept in this browser */
+try {
+	setLive(localStorage.getItem('badgr.live') !== 'off');
+} catch{ /* no storage: the default */ }
 const live = { get checked(): boolean {
 	return liveButton.getAttribute('aria-pressed') === 'true';
 } };
 let liveTimer: number | undefined;
+/* code the page puts in the editor and analyzes itself (a link, a fix) does not also run live */
+let settingCode = false;
+function setCodeQuietly(text: string): void {
+	settingCode = true;
+	try {
+		setText(codeView, text);
+	} finally {
+		settingCode = false;
+	}
+}
 const editorFiles = (): SourceFile[] => {
 	const text = codeView.state.doc.toString();
 	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
@@ -958,7 +976,7 @@ const codeView: EditorView = rEditor($('code'), Examples[0].files[0].content, ()
 	markExample();
 	markStale();
 	void showCached();
-	if(live.checked) {
+	if(live.checked && !settingCode) {
 		clearTimeout(liveTimer);
 		liveTimer = window.setTimeout(runEditor, 600);
 	}
@@ -991,7 +1009,14 @@ for(const ex of Examples) {
 markExample();
 $('analyze-code').addEventListener('click', () => runEditor());
 liveButton.addEventListener('click', () => {
-	liveButton.setAttribute('aria-pressed', String(!live.checked));
+	setLive(!live.checked);
+	try {
+		if(live.checked) {
+			localStorage.removeItem('badgr.live');
+		} else {
+			localStorage.setItem('badgr.live', 'off');
+		}
+	} catch{ /* no storage: only for this visit */ }
 	if(live.checked) {
 		runEditor();
 	}
@@ -2141,7 +2166,7 @@ function diffView(diff: string, withHeader: boolean): HTMLElement {
 
 /** puts new code into the editor and analyzes it again */
 function replaceEditorCode(text: string): void {
-	setText(codeView, text);
+	setCodeQuietly(text);
 	document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
 	runEditor();
 }
@@ -2523,7 +2548,7 @@ for(const ex of Examples.slice(0, 4)) {
 	b.append(holder, el('span', '', sentence(ex.title) + '.'));
 	b.addEventListener('click', () => {
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
-		setText(codeView, ex.files.map(f => f.content).join('\n'));
+		setCodeQuietly(ex.files.map(f => f.content).join('\n'));
 		runEditor();
 	});
 	$('start').append(b);
@@ -2615,7 +2640,7 @@ function openLink(): void {
 			showShared(tier, n, `Fetch ${url} to see it here.`, () => $<HTMLFormElement>('url-form').requestSubmit());
 		}
 	} else if(code !== undefined) {
-		setText(codeView, code);
+		setCodeQuietly(code);
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
 		showShared(tier, n, 'Analyzing the code from the link…');
 		/* the code is analyzed here, without any request, so the link's result comes back at once */
