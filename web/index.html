@@ -16,27 +16,6 @@
 <header class="bar">
   <a class="brand" href="./"><img src="badger-icon.svg" alt="" width="30" height="35">badger</a>
   <span class="tagline">checks R code against a policy, with flowR's static analysis</span>
-<div class="local" role="note" tabindex="0">
-  <strong>Runs locally</strong><span class="local-more"> Your code is analyzed in this browser and is never uploaded.
-  <details class="how"><summary>How to check</summary>
-    <div class="how-body">
-      <p>flowR, compiled to JavaScript and WebAssembly, runs in a web worker of this page. The page makes only these requests:</p>
-      <ul>
-        <li>its own files: the page, its scripts, and the two WebAssembly parsers,</li>
-        <li>the data of each R package your code loads, from <code>pkgs/&lt;package&gt;.json</code> on this site, so the request names the package but carries none of your code,</li>
-        <li>and only when you ask for it, the GitHub repository or URL you enter. These requests only download.</li>
-      </ul>
-      <p>The page's content security policy, enforced by the browser, allows scripts only from this site and
-        blocks form submissions. Uploaded files are read in the browser
-        with the File API, and report downloads are made in the browser too.</p>
-      <p>The test suite (<code>test/web.test.ts</code>) opens this page in headless Chromium, analyzes uploads, pasted
-        code, and a GitHub repository, and records every request. It fails when a request goes to any host but
-        this site and the GitHub hosts of the requested repository, uses a method other than <code>GET</code>, or has a body.</p>
-      <p>To check it yourself, open the network tab of your browser's developer tools while you analyze, or go
-        offline after the page has loaded and analyze an upload.</p>
-    </div>
-  </details></span>
-</div>
   <span class="bar-end">
     <a class="gh" href="https://hub.docker.com/r/eagleoutice/badger" title="the Docker image eagleoutice/badger, for CI and offline use" aria-label="badger on Docker Hub"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M13.98 11.08h2.12a.19.19 0 0 0 .19-.19V9a.19.19 0 0 0-.19-.19h-2.12a.18.18 0 0 0-.18.18v1.9c0 .1.08.19.18.19m-2.95-5.43h2.12a.19.19 0 0 0 .18-.19V3.57a.19.19 0 0 0-.18-.18h-2.12a.18.18 0 0 0-.19.18v1.9c0 .1.09.18.19.18m0 2.71h2.12a.19.19 0 0 0 .18-.18V6.29a.19.19 0 0 0-.18-.18h-2.12a.18.18 0 0 0-.19.18v1.89c0 .1.09.18.19.18m-2.93 0h2.12a.19.19 0 0 0 .18-.18V6.29a.18.18 0 0 0-.18-.18H8.1a.18.18 0 0 0-.18.18v1.89c0 .1.08.18.18.18m-2.96 0h2.11a.19.19 0 0 0 .19-.18V6.29a.18.18 0 0 0-.19-.18H5.14a.19.19 0 0 0-.19.18v1.89c0 .1.08.18.19.18m5.89 2.72h2.12a.19.19 0 0 0 .18-.19V9a.19.19 0 0 0-.18-.19h-2.12a.18.18 0 0 0-.19.18v1.9c0 .1.09.19.19.19m-2.93 0h2.12a.18.18 0 0 0 .18-.19V9a.18.18 0 0 0-.18-.19H8.1a.18.18 0 0 0-.18.18v1.9c0 .1.08.19.18.19m-2.96 0h2.11a.18.18 0 0 0 .19-.19V9a.18.18 0 0 0-.18-.19H5.14a.19.19 0 0 0-.19.19v1.88c0 .1.08.19.19.19m-2.92 0h2.12a.18.18 0 0 0 .18-.19V9a.18.18 0 0 0-.18-.19H2.22a.18.18 0 0 0-.19.18v1.9c0 .1.08.19.19.19m21.54-1.19c-.06-.05-.67-.51-1.95-.51-.34 0-.68.03-1.01.09-.25-1.7-1.65-2.53-1.71-2.56l-.34-.2-.23.33a4.6 4.6 0 0 0-.61 1.43c-.23.97-.09 1.88.4 2.66-.59.33-1.55.41-1.74.42H.75a.75.75 0 0 0-.75.75 11.38 11.38 0 0 0 .7 4.06c.55 1.43 1.37 2.48 2.43 3.13 1.19.73 3.13 1.15 5.33 1.15.99 0 1.98-.09 2.96-.27a12.25 12.25 0 0 0 3.86-1.4 10.65 10.65 0 0 0 2.63-2.16c1.27-1.43 2.02-3.03 2.58-4.45h.22c1.39 0 2.25-.56 2.72-1.02.31-.3.56-.66.71-1.07l.1-.29z"/></svg></a>
     <a class="gh" href="https://github.com/flowr-analysis/badgR" title="badger on GitHub: source, issues, and releases" aria-label="badger on GitHub"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
@@ -171,6 +150,27 @@
 </main>
 
 <footer id="footer">
+<div class="local" role="note" tabindex="0">
+  <strong>Runs locally</strong><span class="local-more"> Your code is analyzed in this browser and is never uploaded.
+  <details class="how"><summary>How to check</summary>
+    <div class="how-body">
+      <p>flowR, compiled to JavaScript and WebAssembly, runs in a web worker of this page. The page makes only these requests:</p>
+      <ul>
+        <li>its own files: the page, its scripts, and the two WebAssembly parsers,</li>
+        <li>the data of each R package your code loads, from <code>pkgs/&lt;package&gt;.json</code> on this site, so the request names the package but carries none of your code,</li>
+        <li>and only when you ask for it, the GitHub repository or URL you enter. These requests only download.</li>
+      </ul>
+      <p>The page's content security policy, enforced by the browser, allows scripts only from this site and
+        blocks form submissions. Uploaded files are read in the browser
+        with the File API, and report downloads are made in the browser too.</p>
+      <p>The test suite (<code>test/web.test.ts</code>) opens this page in headless Chromium, analyzes uploads, pasted
+        code, and a GitHub repository, and records every request. It fails when a request goes to any host but
+        this site and the GitHub hosts of the requested repository, uses a method other than <code>GET</code>, or has a body.</p>
+      <p>To check it yourself, open the network tab of your browser's developer tools while you analyze, or go
+        offline after the page has loaded and analyze an upload.</p>
+    </div>
+  </details></span>
+</div>
   <span class="versions" id="versions">
     <a class="ver" id="v-flowr" href="https://github.com/flowr-analysis/flowr" title="the static analysis badger runs"><span class="k">flowR</span><span class="v">…</span></a>
     <a class="ver" id="v-sigdb" href="https://github.com/flowr-analysis/flowr/wiki/Signature-Database" title="flowR's signature database: exports and call graphs of base R and CRAN"><span class="k">sigdb</span><span class="v">…</span></a>

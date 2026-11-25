@@ -689,6 +689,11 @@ function linkParams(over: { at?: string, export?: string, view?: string } = {}):
 		q.set('url', last.source.url);
 	} else {
 		q.set('z', b64url(deflateSync(strToU8(codeView.state.doc.toString()), { level: 9 })));
+		/* an edited example keeps its file name, which the review keys carry */
+		const name = editorTarget();
+		if(name !== 'main.R' && exampleOf(codeView.state.doc.toString()) === undefined) {
+			q.set('f', name);
+		}
 	}
 	if(!isDefault(last.policyText)) {
 		q.set('p', b64url(deflateSync(strToU8(last.policyText), { level: 9 })));
@@ -992,15 +997,19 @@ function setCodeQuietly(text: string): void {
 		settingCode = false;
 	}
 }
+/* the name of the code in the editor: an example keeps its file name while it is edited, other code is main.R */
+let editorName = Examples[0].files.map(f => f.path).join(', ');
+const exampleOf = (text: string) => Examples.find(e => e.files.map(f => f.content).join('\n') === text);
+/** puts code into the editor under a name, an example's or main.R */
+function nameCode(text: string, ex = exampleOf(text)): void {
+	editorName = ex ? ex.files.map(f => f.path).join(', ') : 'main.R';
+}
 const editorFiles = (): SourceFile[] => {
 	const text = codeView.state.doc.toString();
-	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
-	return ex ? ex.files : [{ path: 'main.R', content: text }];
+	const ex = exampleOf(text);
+	return ex ? ex.files : [{ path: editorName.includes(', ') ? 'main.R' : editorName, content: text }];
 };
-const editorTarget = () => {
-	const text = codeView.state.doc.toString();
-	return Examples.find(e => e.files.map(f => f.content).join('\n') === text)?.files.map(f => f.path).join(', ') ?? 'main.R';
-};
+const editorTarget = () => editorFiles().map(f => f.path).join(', ');
 const runEditor = (then?: () => void) => void analyze(editorTarget(), async() => editorFiles(), { kind: 'code' }, then);
 
 function markStale(): void {
@@ -1027,9 +1036,8 @@ const codeView: EditorView = rEditor($('code'), Examples[0].files[0].content, ()
 }, runEditor);
 /* the examples, one per tier, in their own tab: the badge it gets and what the code does */
 function markExample(): void {
-	const text = codeView.state.doc.toString();
-	const ex = Examples.find(e => e.files.map(f => f.content).join('\n') === text);
-	$('code-name').textContent = ex ? ex.files.map(f => f.path).join(', ') : 'main.R';
+	const ex = exampleOf(codeView.state.doc.toString());
+	$('code-name').textContent = editorTarget();
 	for(const b of $('examples').children) {
 		b.setAttribute('aria-current', String((b as HTMLElement).dataset.label === ex?.label));
 	}
@@ -1044,9 +1052,17 @@ for(const ex of Examples) {
 	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(badgeSvg(tier ? ex.label : ex.label === 'none' ? 'none' : 'bronze', tier?.color ?? (ex.label === 'none' ? policy?.fallbackTier.color ?? '#6b6b6b' : '#b06e3c')))}`;
 	b.append(img, el('span', '', `${sentence(ex.title)}.`), el('span', 'sr', ex.label));
 	b.addEventListener('click', () => {
-		setText(codeView, ex.files.map(f => f.content).join('\n'));
+		nameCode('', ex);
+		setCodeQuietly(ex.files.map(f => f.content).join('\n'));
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
 		markExample();
+		markStale();
+		/* live mode stays on and analyzes the example at once (a result analyzed before comes from the cache) */
+		if(live.checked) {
+			runEditor();
+		} else {
+			void showCached();
+		}
 	});
 	$('examples').append(b);
 }
@@ -1638,7 +1654,7 @@ function renderFindings(r: Report): void {
 			return;
 		}
 		const h = el('tr');
-		h.append(...['line', 'call', 'what it can do', 'where it happens', 'values from', 'review'].map(x => el('th', '', x)));
+		h.append(...['line', 'call', 'what it can do', 'where', 'values from', 'review'].map(x => el('th', '', x)));
 		const thead = el('thead');
 		thead.append(h);
 		const body = el('tbody');
@@ -2421,6 +2437,7 @@ for(const ex of Examples.slice(0, 4)) {
 	b.append(holder, el('span', '', sentence(ex.title) + '.'));
 	b.addEventListener('click', () => {
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
+		nameCode('', ex);
 		setCodeQuietly(ex.files.map(f => f.content).join('\n'));
 		runEditor();
 	});
@@ -2513,11 +2530,20 @@ function openLink(): void {
 			showShared(tier, n, `Fetch ${url} to see it here.`, () => $<HTMLFormElement>('url-form').requestSubmit());
 		}
 	} else if(code !== undefined) {
+		nameCode(code);
+		/* only an example's file name, nothing a link could make up */
+		const f = q.get('f');
+		if(f !== null && Examples.some(e => e.files.length === 1 && e.files[0].path === f)) {
+			editorName = f;
+		}
 		setCodeQuietly(code);
 		document.querySelector<HTMLButtonElement>('[data-tab="paste"]')?.click();
 		showShared(tier, n, 'Analyzing the code from the link…');
 		/* the code is analyzed here, without any request, so the link's result comes back at once */
 		runEditor(reselect);
+	} else if(live.checked && view === null) {
+		/* a bare page in live mode analyzes the code already in the editor */
+		runEditor();
 	}
 }
 

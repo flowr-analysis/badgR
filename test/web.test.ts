@@ -331,14 +331,24 @@ describe('the playground', () => {
 		await page.close();
 	}, 180_000);
 
+	test('live analysis analyzes the example in the editor as the page loads', async() => {
+		const { page, errors } = await open();
+		await page.locator('#verdict-title', { hasText: 'example-gold.R' }).waitFor({ timeout: 120_000 });
+		expect(await tierOf(page)).toBe('gold');
+		expect(errors).toEqual([]);
+		await page.close();
+	}, 180_000);
+
 	test('live analysis is on by default: an edit analyzes again', async() => {
 		const { page, errors } = await open();
 		expect(await page.locator('#live').getAttribute('aria-pressed')).toBe('true');
 		await pickExample(page, 'bronze');
 		expect(await tierOf(page)).toBe('bronze');
 		await setCode(page, 'x <- readline()\nsystem(x)\n');
-		await page.locator('#verdict-title', { hasText: 'main.R' }).waitFor({ timeout: 120_000 });
+		/* the edited example keeps its file name */
+		await page.locator('#verdict-title span', { hasText: /^none$/ }).waitFor({ timeout: 120_000 });
 		expect(await tierOf(page)).toBe('none');
+		expect(await page.locator('#verdict-title .target').textContent()).toBe('example-bronze.R');
 		expect(errors).toEqual([]);
 		await page.close();
 	}, 180_000);
@@ -352,7 +362,8 @@ describe('the playground', () => {
 		await pickExample(page, 'none');
 		await page.click('#analyze-code');
 		expect(await tierOf(page)).toBe('none');
-		await pickExample(page, 'gold');
+		/* live mode analyzed the first example (gold) as the page loaded, so take one not analyzed yet */
+		await pickExample(page, 'silver');
 		/* not analyzed yet: the old result stays, marked as stale, and nothing runs */
 		expect(await page.locator('#result.stale').count()).toBe(1);
 		expect(await page.locator('#progress:not([hidden])').count()).toBe(0);
